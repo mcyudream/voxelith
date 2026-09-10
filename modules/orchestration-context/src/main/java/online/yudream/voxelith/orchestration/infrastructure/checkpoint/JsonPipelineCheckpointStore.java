@@ -54,13 +54,25 @@ public final class JsonPipelineCheckpointStore implements PipelineCheckpointStor
                     if (s.has("artifacts")) {
                         s.getAsJsonArray("artifacts").forEach(a -> artifacts.add(a.getAsString()));
                     }
+                    Map<String, List<String>> shards = new java.util.LinkedHashMap<>();
+                    if (s.has("completedShards")) {
+                        for (Map.Entry<String, JsonElement> shard
+                                : s.getAsJsonObject("completedShards").entrySet()) {
+                            List<String> shardArtifacts = new ArrayList<>();
+                            shard.getValue().getAsJsonArray()
+                                    .forEach(a -> shardArtifacts.add(a.getAsString()));
+                            shards.put(shard.getKey(), shardArtifacts);
+                        }
+                    }
                     stages.put(PipelineStage.valueOf(e.getKey()), new StageState(
                             StageStatus.valueOf(s.get("status").getAsString()),
                             s.get("startedAt").getAsLong(),
                             s.get("finishedAt").getAsLong(),
                             artifacts,
                             s.has("error") && !s.get("error").isJsonNull()
-                                    ? s.get("error").getAsString() : null));
+                                    ? s.get("error").getAsString() : null,
+                            s.has("totalShards") ? s.get("totalShards").getAsInt() : 0,
+                            shards));
                 }
             }
             return Optional.of(new PipelineRun(
@@ -84,6 +96,16 @@ public final class JsonPipelineCheckpointStore implements PipelineCheckpointStor
             JsonArray artifacts = new JsonArray();
             state.artifacts().forEach(artifacts::add);
             s.add("artifacts", artifacts);
+            if (state.totalShards() > 0) {
+                s.addProperty("totalShards", state.totalShards());
+                JsonObject shards = new JsonObject();
+                state.completedShards().forEach((shard, shardArtifacts) -> {
+                    JsonArray arr = new JsonArray();
+                    shardArtifacts.forEach(arr::add);
+                    shards.add(shard, arr);
+                });
+                s.add("completedShards", shards);
+            }
             if (state.error() != null) {
                 s.addProperty("error", state.error());
             }
