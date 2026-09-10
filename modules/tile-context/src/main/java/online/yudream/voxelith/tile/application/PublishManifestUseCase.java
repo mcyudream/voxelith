@@ -5,11 +5,8 @@ import online.yudream.voxelith.tile.domain.manifest.MapManifest;
 import online.yudream.voxelith.tile.domain.tile.TileMeshAssembler;
 
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -54,7 +51,7 @@ public class PublishManifestUseCase {
             max = new float[]{0, 0, 0};
         }
 
-        MapManifest manifest = new MapManifest(1, mapId, name, contentVersion(entries),
+        MapManifest manifest = new MapManifest(1, mapId, name, InvalidateManifestUseCase.contentVersion(entries),
                 Instant.now().toString(),
                 new MapManifest.Settings(TileMeshAssembler.HIRES_TILE_SIZE, maxLevel + 1),
                 min, max,
@@ -63,18 +60,5 @@ public class PublishManifestUseCase {
 
         publisher.publish(mapId, tilesDir, manifest, publishRoot);
         return manifest;
-    }
-
-    /** 内容版本 = 全部瓦片 sha1 串联后再取 sha1（任一瓦片变化则版本变化，前端缓存整体失效）。 */
-    private static String contentVersion(List<MapManifest.TileEntry> entries) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-1");
-            for (MapManifest.TileEntry entry : entries) {
-                digest.update(entry.sha1().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
-            return HexFormat.of().formatHex(digest.digest()).substring(0, 12);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }
