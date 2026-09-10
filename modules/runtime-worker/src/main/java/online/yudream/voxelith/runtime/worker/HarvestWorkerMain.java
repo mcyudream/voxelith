@@ -52,8 +52,9 @@ public final class HarvestWorkerMain {
         LwjglSelfTest.run(checks, failures);
 
         int harvested = 0;
+        JsonObject extras = new JsonObject();
         if (spec != null && spec.has("gameJar")) {
-            harvested = runFabricStage(spec, workDir, checks, failures);
+            harvested = runFabricStage(spec, workDir, checks, failures, extras);
         }
 
         boolean ok = checks.values().stream().allMatch(Boolean::booleanValue)
@@ -65,6 +66,7 @@ public final class HarvestWorkerMain {
         checks.forEach(checksJson::addProperty);
         result.add("checks", checksJson);
         result.addProperty("harvested", harvested);
+        extras.entrySet().forEach(e -> result.add(e.getKey(), e.getValue()));
         result.add("failures", failures);
         result.addProperty("durationMillis", (System.nanoTime() - start) / 1_000_000);
         try {
@@ -77,18 +79,19 @@ public final class HarvestWorkerMain {
     }
 
     /**
-     * fabric 阶段：Knot 引导 + 原版方块注册冒烟。返回注册的方块数（harvested 占位语义，
-     * 待 BakedModel 采集接入后改为采集到的模型数）。
+     * fabric 阶段：Knot 引导 → 原版方块注册冒烟 → BakedModel 全量采集导出
+     * （models.json.gz，见 {@link ModelHarvest}）。返回注册的方块数。
      */
     private static int runFabricStage(JsonObject spec, Path workDir,
-                                      Map<String, Boolean> checks, JsonArray failures) {
+                                      Map<String, Boolean> checks, JsonArray failures,
+                                      JsonObject extras) {
         try {
             List<Path> modJars = new java.util.ArrayList<>();
             if (spec.has("modJars")) {
                 spec.getAsJsonArray("modJars").forEach(m -> modJars.add(Path.of(m.getAsString())));
             }
-            ClassLoader gameClassLoader = FabricKnotBootstrap.start(
-                    Path.of(spec.get("gameJar").getAsString()), workDir, modJars);
+            Path gameJar = Path.of(spec.get("gameJar").getAsString());
+            ClassLoader gameClassLoader = FabricKnotBootstrap.start(gameJar, workDir, modJars);
             checks.put("fabric.knot.init", true);
 
             int blocks = MinecraftBlockSmoke.countRegisteredBlocks(gameClassLoader);
@@ -96,13 +99,26 @@ public final class HarvestWorkerMain {
             if (blocks < MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS) {
                 failures.add("原版方块注册数异常: " + blocks + " < " + MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS);
             }
+
+            Path modelsOut = workDir.resolve("models.json.gz");
+            ModelHarvest.HarvestCounts counts = ModelHarvest.harvest(gameClassLoader, gameJar, modelsOut);
+            // 空气类与纯 BER 方块（箱/告示牌/旗帜/头颅/床等约 140 个）烘焙后无 quad，
+            // 以状态数/quad 数为准而非方块数
+            checks.put("fabric.models.baked", counts.states() > 20_000 && counts.quads() > 100_000);
+            if (counts.states() <= 20_000) {
+                failures.add("导出状态数异常: " + counts.states());
+            }
+            extras.addProperty("modelsFile", modelsOut.getFileName().toString());
+            extras.addProperty("statesExported", counts.states());
+            extras.addProperty("quadsExported", counts.quads());
             return blocks;
         } catch (Throwable t) {
             checks.putIfAbsent("fabric.knot.init", false);
             checks.putIfAbsent("fabric.blocks.registered", false);
+            checks.putIfAbsent("fabric.models.baked", false);
             java.io.StringWriter sw = new java.io.StringWriter();
             t.printStackTrace(new java.io.PrintWriter(sw));
-            failures.add("fabric 引导失败: " + sw);
+            failures.add("fabric 引导/采集失败: " + sw);
             return 0;
         }
     }

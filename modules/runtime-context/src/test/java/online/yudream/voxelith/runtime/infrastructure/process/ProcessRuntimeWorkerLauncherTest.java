@@ -60,9 +60,10 @@ class ProcessRuntimeWorkerLauncherTest {
     }
 
     /**
-     * 真实 headless 引导：provision MC 1.20.1 + fabric-loader 0.16.14，
-     * 子进程内 Knot remap 游戏 jar 后强制初始化 Blocks，验证原版注册表被填满。
-     * 首次运行需 remap（约 30s 级），之后走 .fabric/remappedJars 缓存。
+     * 真实 headless 引导 + 模型采集：provision MC 1.20.1 + fabric-loader 0.16.14，
+     * 子进程内 Knot remap 游戏 jar 后强制初始化 Blocks，驱动原版 ModelLoader 全量烘焙
+     * 并导出 models.json.gz（gzip NDJSON）。首次运行需 remap（约 30s 级），
+     * 之后走 .fabric/remappedJars 缓存。
      */
     @Test
     void fabricBootstrapRegistersVanillaBlocks() throws Exception {
@@ -79,8 +80,53 @@ class ProcessRuntimeWorkerLauncherTest {
         assertThat(report.ok()).as("failures=%s\n--- worker.log ---\n%s", report.failures(), log).isTrue();
         assertThat(report.checks())
                 .containsEntry("fabric.knot.init", true)
-                .containsEntry("fabric.blocks.registered", true);
+                .containsEntry("fabric.blocks.registered", true)
+                .containsEntry("fabric.models.baked", true);
         assertThat(report.harvested()).isGreaterThan(900);
+
+        // 模型采集产物：1.20.1 原版约 2.4 万状态 / 29.5 万 quad
+        assertThat(report.modelsFile()).isEqualTo("models.json.gz");
+        assertThat(report.statesExported()).isGreaterThan(20_000);
+        assertThat(report.quadsExported()).isGreaterThan(100_000);
+
+        Path modelsFile = workDir.resolve(report.modelsFile());
+        assertThat(modelsFile).exists();
+        spotCheckExportedModels(modelsFile);
+    }
+
+    /** 解压 models.json.gz 抽查：meta 头合法，且石头方块的 quad 带正确贴图与 0~16 坐标。 */
+    private static void spotCheckExportedModels(Path modelsFile) throws Exception {
+        List<String> lines;
+        try (var in = new java.util.zip.GZIPInputStream(Files.newInputStream(modelsFile));
+             var reader = new java.io.BufferedReader(
+                     new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))) {
+            lines = reader.lines().toList();
+        }
+        assertThat(lines).isNotEmpty();
+        com.google.gson.JsonObject meta = com.google.gson.JsonParser
+                .parseString(lines.get(0)).getAsJsonObject();
+        assertThat(meta.get("format").getAsString()).isEqualTo("voxelith-models/1");
+        assertThat(meta.get("sprites").getAsInt()).isGreaterThan(1_000);
+
+        com.google.gson.JsonObject stone = lines.stream().skip(1)
+                .map(l -> com.google.gson.JsonParser.parseString(l).getAsJsonObject())
+                .filter(o -> "minecraft:stone".equals(o.get("block").getAsString()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("导出中找不到 minecraft:stone"));
+        com.google.gson.JsonArray states = stone.getAsJsonArray("states");
+        assertThat(states).isNotEmpty();
+        com.google.gson.JsonArray quads = states.get(0).getAsJsonObject().getAsJsonArray("quads");
+        assertThat(quads.size()).isGreaterThanOrEqualTo(6);
+        for (var q : quads) {
+            com.google.gson.JsonObject quad = q.getAsJsonObject();
+            assertThat(quad.get("tex").getAsString()).isEqualTo("minecraft:block/stone");
+            for (var p : quad.getAsJsonArray("pos")) {
+                assertThat(p.getAsFloat()).isBetween(0.0f, 16.0f);
+            }
+            for (var u : quad.getAsJsonArray("uv")) {
+                assertThat(u.getAsFloat()).isBetween(0.0f, 16.0f);
+            }
+        }
     }
 
     /** worker 产物 classes 目录 + gson jar（与本模块测试运行时同源）。 */

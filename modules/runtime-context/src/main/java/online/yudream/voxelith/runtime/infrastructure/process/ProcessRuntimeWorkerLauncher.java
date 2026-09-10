@@ -142,7 +142,13 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
                         ? json.get(WorkerProtocol.FIELD_HARVESTED).getAsInt() : 0,
                 failures,
                 json.has(WorkerProtocol.FIELD_DURATION)
-                        ? json.get(WorkerProtocol.FIELD_DURATION).getAsLong() : 0);
+                        ? json.get(WorkerProtocol.FIELD_DURATION).getAsLong() : 0,
+                json.has(WorkerProtocol.FIELD_STATES_EXPORTED)
+                        ? json.get(WorkerProtocol.FIELD_STATES_EXPORTED).getAsInt() : 0,
+                json.has(WorkerProtocol.FIELD_QUADS_EXPORTED)
+                        ? json.get(WorkerProtocol.FIELD_QUADS_EXPORTED).getAsInt() : 0,
+                json.has(WorkerProtocol.FIELD_MODELS_FILE)
+                        ? json.get(WorkerProtocol.FIELD_MODELS_FILE).getAsString() : null);
     }
 
     private String classpathString(ProvisionedRuntime runtime) {

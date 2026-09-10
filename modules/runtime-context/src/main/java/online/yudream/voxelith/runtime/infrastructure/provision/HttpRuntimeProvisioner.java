@@ -40,7 +40,8 @@ import java.util.Locale;
  * fabric/net/fabricmc/intermediary/&lt;mc&gt;/intermediary-&lt;mc&gt;-v2.jar
  * </pre>
  *
- * <p>已存在且 sha1 匹配的文件不重复下载；org.lwjgl 依赖被剔除（worker 以 stub 取代）。</p>
+     * <p>已存在且 sha1 匹配的文件不重复下载；窗口/GL/音频类 LWJGL 模块被剔除（worker 以 stub 取代），
+     * org.lwjgl core 与 lwjgl-stb 及其本机 natives 保留（纹理 PNG 解码与堆外内存需要真 native）。</p>
  */
 public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
 
@@ -105,14 +106,19 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
         return target;
     }
 
+    /** worker 以 stub 取代的 LWJGL 模块（窗口/GL/音频等）；core 与 stb 保留真身（PNG 解码/内存管理需真 native）。 */
+    private static final java.util.Set<String> STUBBED_LWJGL = java.util.Set.of(
+            "lwjgl-glfw", "lwjgl-openal", "lwjgl-opengl", "lwjgl-tinyfd", "lwjgl-jemalloc");
+
     private List<Path> downloadMcLibraries(JsonObject versionJson, Path mojangRoot)
             throws IOException, InterruptedException {
         List<Path> result = new ArrayList<>();
         for (JsonElement e : versionJson.getAsJsonArray("libraries")) {
             JsonObject lib = e.getAsJsonObject();
             String name = lib.get("name").getAsString();
-            if (name.startsWith("org.lwjgl:")) {
-                continue; // LWJGL 由 worker stub 取代
+            boolean lwjgl = name.startsWith("org.lwjgl:");
+            if (lwjgl && STUBBED_LWJGL.contains(name.split(":")[1])) {
+                continue; // 这些模块由 worker stub 取代
             }
             if (!includeByRules(lib)) {
                 continue;
@@ -120,21 +126,38 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
             JsonObject downloads = lib.has("downloads") ? lib.getAsJsonObject("downloads") : null;
             JsonObject artifact = downloads != null && downloads.has("artifact")
                     ? downloads.getAsJsonObject("artifact") : null;
-            if (artifact == null) {
-                continue; // natives-only 条目
+            if (artifact != null) {
+                result.add(downloadLibraryFile(artifact, name, mojangRoot));
             }
-            String path = artifact.has("path")
-                    ? artifact.get("path").getAsString()
-                    : mavenPath(name);
-            String url = artifact.has("url")
-                    ? artifact.get("url").getAsString()
-                    : LAUNCHER_META_LIBRARIES + path;
-            String sha1 = artifact.has("sha1") ? artifact.get("sha1").getAsString() : null;
-            Path target = mojangRoot.resolve("libraries").resolve(path);
-            download(url, target, sha1);
-            result.add(target);
+            // 保留模块的 natives（如 org.lwjgl:lwjgl 的 natives-windows）——MemoryUtil/STB 需要真 native
+            if (artifact != null && lib.has("natives") && downloads.has("classifiers")) {
+                JsonObject natives = lib.getAsJsonObject("natives");
+                if (natives.has(currentOs())) {
+                    String classifier = natives.get(currentOs()).getAsString()
+                            .replace("${arch}", System.getProperty("os.arch"));
+                    JsonObject classifiers = downloads.getAsJsonObject("classifiers");
+                    if (classifiers.has(classifier)) {
+                        result.add(downloadLibraryFile(
+                                classifiers.getAsJsonObject(classifier), name, mojangRoot));
+                    }
+                }
+            }
         }
         return result;
+    }
+
+    private Path downloadLibraryFile(JsonObject artifact, String coords, Path mojangRoot)
+            throws IOException, InterruptedException {
+        String path = artifact.has("path")
+                ? artifact.get("path").getAsString()
+                : mavenPath(coords);
+        String url = artifact.has("url")
+                ? artifact.get("url").getAsString()
+                : LAUNCHER_META_LIBRARIES + path;
+        String sha1 = artifact.has("sha1") ? artifact.get("sha1").getAsString() : null;
+        Path target = mojangRoot.resolve("libraries").resolve(path);
+        download(url, target, sha1);
+        return target;
     }
 
     private static boolean includeByRules(JsonObject lib) {

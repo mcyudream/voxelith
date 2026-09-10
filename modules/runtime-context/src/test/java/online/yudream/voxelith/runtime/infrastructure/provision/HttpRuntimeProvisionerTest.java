@@ -46,7 +46,15 @@ class HttpRuntimeProvisionerTest {
         assertThat(names).anySatisfy(n -> assertThat(n).startsWith("launchwrapper-"));
         assertThat(names).anySatisfy(n -> assertThat(n).startsWith("datafixerupper-"));
         assertThat(names).anySatisfy(n -> assertThat(n).startsWith("brigadier-"));
-        assertThat(names).noneMatch(n -> n.startsWith("lwjgl"));
+        // 窗口/GL/音频 LWJGL 模块被剔除（worker 用 stub），
+        // lwjgl core 与 lwjgl-stb 及本机 natives 保留（PNG 解码与堆外内存需要）
+        assertThat(names).noneMatch(n -> n.startsWith("lwjgl-glfw")
+                || n.startsWith("lwjgl-opengl") || n.startsWith("lwjgl-openal")
+                || n.startsWith("lwjgl-tinyfd") || n.startsWith("lwjgl-jemalloc"));
+        assertThat(names).anySatisfy(n -> assertThat(n).isEqualTo("lwjgl-3.3.1.jar"));
+        assertThat(names).anySatisfy(n -> assertThat(n).isEqualTo("lwjgl-stb-3.3.1.jar"));
+        assertThat(names).anySatisfy(
+                n -> assertThat(n).isEqualTo("lwjgl-stb-3.3.1-natives-windows.jar"));
         rt.libraries().forEach(p -> assertThat(p).exists());
 
         // 幂等：第二次 provision 走缓存，产物一致

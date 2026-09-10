@@ -16,6 +16,9 @@ public final class WorkerProtocol {
     public static final String FIELD_HARVESTED = "harvested";
     public static final String FIELD_FAILURES = "failures";
     public static final String FIELD_DURATION = "durationMillis";
+    public static final String FIELD_STATES_EXPORTED = "statesExported";
+    public static final String FIELD_QUADS_EXPORTED = "quadsExported";
+    public static final String FIELD_MODELS_FILE = "modelsFile";
 
     /** spec.json 可选字段：provision 产出的 MC 游戏主 jar 绝对路径。 */
     public static final String SPEC_GAME_JAR = "gameJar";
