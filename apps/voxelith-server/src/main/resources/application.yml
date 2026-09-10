@@ -12,4 +12,10 @@ yudream:
     work-dir: ./work
     publish-dir: ./data/maps
     storage:
-      type: file   # file | s3（SPI 预留）
+      type: file   # file | s3
+    s3:
+      endpoint:    # 例 http://127.0.0.1:9000 或 https://s3.amazonaws.com
+      bucket: voxelith
+      region: us-east-1
+      access-key:
+      secret-key:
