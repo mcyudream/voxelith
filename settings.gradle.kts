@@ -18,6 +18,7 @@ include(
     "modules:resource-context",
     "modules:world-context",
     "modules:runtime-context",
+    "modules:runtime-worker",
     "modules:bake-context",
     "modules:tile-context",
     "modules:lod-context",
