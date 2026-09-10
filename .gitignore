@@ -1,0 +1,39 @@
+# ---- 构建产物 ----
+build/
+out/
+**/build/
+**/out/
+
+# ---- Gradle ----
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ---- 前端 ----
+node_modules/
+**/node_modules/
+**/dist/
+.pnpm-store/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+
+# ---- 运行时数据（渲染产物/工作目录）----
+data/
+work/
+runs/
+*.log
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ---- 本地环境 / 工具会话 ----
+.env
+.env.*
+!.env.example
+.zcode/
+
+# ---- 本机缓存（MC 客户端 jar 等大文件）----
+.cache/

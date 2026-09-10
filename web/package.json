@@ -1,0 +1,16 @@
+{
+  "name": "voxelith-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "dev": "pnpm --filter @yudream/voxelith-app dev"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

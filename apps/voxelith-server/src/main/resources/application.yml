@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: voxelith-server
+
+server:
+  port: 8081
+
+# Yudream Voxelith Map Core 全局配置（8080 为本机其他服务占用，固定 8081）
+yudream:
+  voxelith:
+    # 渲染工作目录：中间产物（逐链路确认用）与最终发布产物
+    work-dir: ./work
+    publish-dir: ./data/maps
+    storage:
+      type: file   # file | s3（SPI 预留）
