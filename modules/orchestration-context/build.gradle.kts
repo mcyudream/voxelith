@@ -10,4 +10,6 @@ dependencies {
     implementation(project(":modules:lod-context"))
     implementation(project(":modules:map-context"))
     implementation(libs.gson)
+
+    testImplementation(testFixtures(project(":modules:world-context")))
 }
