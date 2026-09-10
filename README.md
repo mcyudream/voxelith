@@ -136,7 +136,7 @@ pnpm -r build                       # 全部包 + 应用构建
 | Phase 2 | 光照 + AO 烘焙、流体、生物群系染色、图集无损打包 | ✅ 已完成 |
 | Phase 3 | LOD 金字塔 + 前端逐级切换 / LRU 缓存 / Y 切片 | ✅ 已完成 |
 | Phase 4 | 全版本兼容（版本适配 SPI、1.13–1.17 调色板 + 1.12 flattening 映射、多版本回归测试） | ✅ 已完成 |
-| Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、模型采集） | 🚧 进行中（Fabric headless 引导 + BakedModel 全量采集已通：863 方块 / 24135 状态 / 29.5 万 quad 导出 models.json.gz） |
+| Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、模型采集） | ✅ 已完成（Fabric headless 引导 + BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底） |
 | Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🔲 未开始 |
 
 ## 文档

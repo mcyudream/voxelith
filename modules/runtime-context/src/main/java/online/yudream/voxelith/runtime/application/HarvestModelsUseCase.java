@@ -7,8 +7,9 @@ import online.yudream.voxelith.runtime.domain.RuntimeWorkerLauncher;
 import java.nio.file.Files;
 
 /**
- * 模型采集用例：校验运行规格后委派 worker 启动器执行 headless 采集。
- * 一期仅打通"子进程自检"链路（LWJGL stub 可行性），真实 BakedModel 采集后续接入。
+ * 模型采集用例：校验运行规格后委派 worker 启动器执行 headless 采集
+ * （BakedModel 全量烘焙导出 models.json.gz）。
+ * 需要"失败降级静态解析"语义时改用 {@link HarvestWithFallbackUseCase}。
  */
 public final class HarvestModelsUseCase {
 

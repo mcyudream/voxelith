@@ -29,3 +29,16 @@
   self-test 模式逐轮补齐。
 - 约束：worker 模块（`modules/runtime-worker`）不进入 ArchUnit 四层扫描
   （它是子进程入口，非服务端上下文）；其类不依赖任何服务端模块。
+
+## 补充（2026-09-10，模型采集落地后）
+
+4. **LWJGL 从"全 stub"修正为"部分真实"**：窗口/GL/音频模块（lwjgl-glfw/opengl/
+   openal/tinyfd/jemalloc）仍以 stub 取代；`org.lwjgl` core 与 `lwjgl-stb` 及其
+   natives 必须保留真实 jar——SpriteLoader 的 PNG 解码与 MemoryUtil 堆外内存
+   走真 native（从 classpath jar 内加载，无需系统安装）。
+5. **降级兜底**：runtime 采集失败（worker 崩溃/超时/校验不过）时，
+   `HarvestWithFallbackUseCase`（runtime-context application）回退到
+   resource-context 的静态 resolve 链路（BlueMap 式 jar 资源解析），并在
+   workDir 写 `model-acquisition.json` 标记来源（RUNTIME_HARVEST /
+   STATIC_FALLBACK）与 runtime 失败明细。组合根在 apps/voxelith-server
+   `RuntimeHarvestConfig`。
