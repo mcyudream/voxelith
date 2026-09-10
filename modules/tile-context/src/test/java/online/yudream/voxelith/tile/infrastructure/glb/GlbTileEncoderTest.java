@@ -1,5 +1,6 @@
 package online.yudream.voxelith.tile.infrastructure.glb;
 
+import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry;
 import org.junit.jupiter.api.Test;
 
@@ -152,5 +153,30 @@ class GlbTileEncoderTest {
         int binLength = head.getInt(binChunkOffset);
         int expectedBin = 12 * 4 + 12 * 4 + 12 + 12 + 6 * 4;
         assertEquals((expectedBin + 3) & ~3, binLength);
+    }
+
+    @Test
+    void quantizedGlbDeclaresKhrMeshQuantizationAndShrinksBin() {
+        byte[] plain = new GlbTileEncoder().encode(oneQuad(), fakePng());
+        byte[] quantized = new GlbTileEncoder().encode(oneQuad(), fakePng(), EncodeOptions.quantized());
+
+        ByteBuffer head = ByteBuffer.wrap(quantized).order(ByteOrder.LITTLE_ENDIAN);
+        int jsonLength = head.getInt(12);
+        String json = new String(quantized, 20, jsonLength, StandardCharsets.UTF_8).trim();
+        assertTrue(json.contains("KHR_mesh_quantization"), json);
+        assertTrue(json.contains("\"componentType\":5122"), json);
+        assertTrue(json.contains("\"componentType\":5120"), json);
+        assertTrue(json.contains("\"componentType\":5123"), json);
+        assertTrue(json.contains("\"scale\""), json);
+        assertTrue(json.contains("\"COLOR_0\""), json);
+        assertTrue(json.contains("\"_LIGHT\""), json);
+
+        int binLength = head.getInt(20 + jsonLength);
+        // pos 8B/v * 4 + nrm 4B/v * 4 + uv 4B/v * 4 + color 12 + light 12 + idx 24 + png 8
+        int expectedBin = 32 + 16 + 16 + 12 + 12 + 24 + 8;
+        assertEquals((expectedBin + 3) & ~3, binLength);
+        int plainBin = ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN)
+                .getInt(20 + ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).getInt(12));
+        assertTrue(binLength < plainBin, "量化后 BIN 应更小（单 quad JSON 扩展声明可能让整包略增）");
     }
 }

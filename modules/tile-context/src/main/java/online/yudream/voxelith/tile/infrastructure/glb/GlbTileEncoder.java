@@ -3,6 +3,7 @@ package online.yudream.voxelith.tile.infrastructure.glb;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.domain.tile.TileEncoder;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry.Segment;
@@ -34,7 +35,10 @@ public final class GlbTileEncoder implements TileEncoder {
     private static final int CHUNK_BIN = 0x004E4942;  // "BIN\0"
     private static final int COMPONENT_FLOAT = 5126;
     private static final int COMPONENT_UINT = 5125;
+    private static final int COMPONENT_BYTE = 5120;
+    private static final int COMPONENT_SHORT = 5122;
     private static final int COMPONENT_UBYTE = 5121;
+    private static final int COMPONENT_USHORT = 5123;
     private static final int TARGET_ARRAY_BUFFER = 34962;
     private static final int TARGET_ELEMENT_ARRAY_BUFFER = 34963;
     private static final int FILTER_NEAREST = 9728;
@@ -46,8 +50,16 @@ public final class GlbTileEncoder implements TileEncoder {
 
     @Override
     public byte[] encode(TileGeometry geometry, byte[] atlasPng) {
-        byte[] bin = buildBin(geometry, atlasPng);
-        byte[] json = gson.toJson(buildJson(geometry, atlasPng)).getBytes(StandardCharsets.UTF_8);
+        return encode(geometry, atlasPng, EncodeOptions.uncompressed());
+    }
+
+    @Override
+    public byte[] encode(TileGeometry geometry, byte[] atlasPng, EncodeOptions options) {
+        boolean quantize = options != null && options.quantize();
+        float posScale = quantize ? positionMaxAbs(geometry) : 1f;
+        byte[] bin = buildBin(geometry, atlasPng, quantize, posScale);
+        byte[] json = gson.toJson(buildJson(geometry, atlasPng, quantize, posScale))
+                .getBytes(StandardCharsets.UTF_8);
 
         int jsonPadded = pad4(json.length);
         int binPadded = pad4(bin.length);
@@ -68,11 +80,11 @@ public final class GlbTileEncoder implements TileEncoder {
         return glb.array();
     }
 
-    private static byte[] buildBin(TileGeometry geometry, byte[] atlasPng) {
+    private static byte[] buildBin(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale) {
         ByteArrayOutputStream bin = new ByteArrayOutputStream();
-        writeSegment(bin, geometry.opaque());
+        writeSegment(bin, geometry.opaque(), quantize, posScale);
         if (!geometry.translucent().isEmpty()) {
-            writeSegment(bin, geometry.translucent());
+            writeSegment(bin, geometry.translucent(), quantize, posScale);
         }
         if (atlasPng != null) {
             bin.writeBytes(atlasPng);
@@ -80,11 +92,16 @@ public final class GlbTileEncoder implements TileEncoder {
         return bin.toByteArray();
     }
 
-    private static void writeSegment(ByteArrayOutputStream bin, Segment segment) {
-        writeFloats(bin, segment.positions());
-        writeFloats(bin, segment.normals());
-        writeFloats(bin, segment.uvs());
-        // 4 顶点/quad → 颜色与光照各 12B/quad，天然 4 字节对齐，索引无需补位
+    private static void writeSegment(ByteArrayOutputStream bin, Segment segment, boolean quantize, float posScale) {
+        if (quantize) {
+            writeQuantizedPositions(bin, segment.positions(), posScale);
+            writeQuantizedNormals(bin, segment.normals());
+            writeQuantizedUvs(bin, segment.uvs());
+        } else {
+            writeFloats(bin, segment.positions());
+            writeFloats(bin, segment.normals());
+            writeFloats(bin, segment.uvs());
+        }
         bin.writeBytes(segment.colors());
         bin.writeBytes(segment.lights());
         ByteBuffer indices = ByteBuffer.allocate(segment.indices().length * 4).order(ByteOrder.LITTLE_ENDIAN);
@@ -94,7 +111,7 @@ public final class GlbTileEncoder implements TileEncoder {
         bin.writeBytes(indices.array());
     }
 
-    private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng) {
+    private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale) {
         boolean textured = atlasPng != null;
         int pngBytes = textured ? atlasPng.length : 0;
         JsonObject root = new JsonObject();
@@ -102,13 +119,21 @@ public final class GlbTileEncoder implements TileEncoder {
         asset.addProperty("version", "2.0");
         asset.addProperty("generator", "yudream-voxelith");
         root.add("asset", asset);
+        if (quantize) {
+            JsonArray extensionsUsed = new JsonArray();
+            extensionsUsed.add("KHR_mesh_quantization");
+            root.add("extensionsUsed", extensionsUsed);
+            JsonArray extensionsRequired = new JsonArray();
+            extensionsRequired.add("KHR_mesh_quantization");
+            root.add("extensionsRequired", extensionsRequired);
+        }
 
         JsonArray bufferViews = new JsonArray();
         JsonArray accessors = new JsonArray();
         JsonArray primitives = new JsonArray();
-        int offset = appendSegment(bufferViews, accessors, primitives, geometry.opaque(), 0, 0);
+        int offset = appendSegment(bufferViews, accessors, primitives, geometry.opaque(), 0, 0, quantize, posScale);
         if (!geometry.translucent().isEmpty()) {
-            offset = appendSegment(bufferViews, accessors, primitives, geometry.translucent(), offset, 1);
+            offset = appendSegment(bufferViews, accessors, primitives, geometry.translucent(), offset, 1, quantize, posScale);
         }
         if (textured) {
             bufferViews.add(bufferView(offset, pngBytes, 0));
@@ -159,6 +184,13 @@ public final class GlbTileEncoder implements TileEncoder {
 
         JsonObject node = new JsonObject();
         node.addProperty("mesh", 0);
+        if (quantize) {
+            JsonArray scale = new JsonArray();
+            scale.add(posScale);
+            scale.add(posScale);
+            scale.add(posScale);
+            node.add("scale", scale);
+        }
         JsonArray nodes = new JsonArray();
         nodes.add(node);
         root.add("nodes", nodes);
@@ -181,15 +213,16 @@ public final class GlbTileEncoder implements TileEncoder {
      * @return 追加后的 bin 偏移
      */
     private static int appendSegment(JsonArray bufferViews, JsonArray accessors, JsonArray primitives,
-                                     Segment segment, int offset, int materialIndex) {
+                                     Segment segment, int offset, int materialIndex, boolean quantize,
+                                     float posScale) {
         if (segment.isEmpty()) {
             return offset;
         }
         int vertexCount = segment.vertexCount();
         boolean hasUv = segment.uvs().length > 0;
-        int posBytes = segment.positions().length * 4;
-        int normalBytes = segment.normals().length * 4;
-        int uvBytes = segment.uvs().length * 4;
+        int posBytes = quantize ? vertexCount * 8 : segment.positions().length * 4;
+        int normalBytes = quantize ? pad4(vertexCount * 4) : segment.normals().length * 4;
+        int uvBytes = !hasUv ? 0 : (quantize ? vertexCount * 4 : segment.uvs().length * 4);
         int colorBytes = segment.colors().length;
         int lightBytes = segment.lights().length;
         int indexBytes = segment.indices().length * 4;
@@ -211,14 +244,17 @@ public final class GlbTileEncoder implements TileEncoder {
 
         int accessorBase = accessors.size();
         float[] minMax = positionMinMax(segment.positions());
-        accessors.add(accessor(viewBase, COMPONENT_FLOAT, vertexCount, "VEC3", false,
-                new float[]{minMax[0], minMax[1], minMax[2]},
-                new float[]{minMax[3], minMax[4], minMax[5]}));
-        accessors.add(accessor(viewBase + 1, COMPONENT_FLOAT, vertexCount, "VEC3", false, null, null));
+        int posType = quantize ? COMPONENT_SHORT : COMPONENT_FLOAT;
+        int nrmType = quantize ? COMPONENT_BYTE : COMPONENT_FLOAT;
+        int uvType = quantize ? COMPONENT_USHORT : COMPONENT_FLOAT;
+        accessors.add(accessor(viewBase, posType, vertexCount, "VEC3", quantize,
+                quantizedPositionMinMax(minMax, posScale, quantize)[0],
+                quantizedPositionMinMax(minMax, posScale, quantize)[1]));
+        accessors.add(accessor(viewBase + 1, nrmType, vertexCount, "VEC3", quantize, null, null));
         int uvAccessor = -1;
         if (hasUv) {
             uvAccessor = accessors.size();
-            accessors.add(accessor(uvView, COMPONENT_FLOAT, vertexCount, "VEC2", false, null, null));
+            accessors.add(accessor(uvView, uvType, vertexCount, "VEC2", quantize, null, null));
         }
         int colorAccessor = accessors.size();
         accessors.add(accessor(bufferViews.size() - 3, COMPONENT_UBYTE, vertexCount, "VEC3", true, null, null));
@@ -325,6 +361,86 @@ public final class GlbTileEncoder implements TileEncoder {
             buffer.putFloat(value);
         }
         out.writeBytes(buffer.array());
+    }
+
+    /**
+     * POSITION → normalized int16，按整瓦片统一 posScale 归一化（node.scale 还原）。
+     * 每顶点 8 字节（xyz + 对齐 pad），满足 VEC3 int16 的 4 字节对齐。
+     */
+    private static void writeQuantizedPositions(ByteArrayOutputStream out, float[] positions, float posScale) {
+        ByteBuffer buffer = ByteBuffer.allocate(positions.length / 3 * 8).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < positions.length; i += 3) {
+            buffer.putShort(quantizeSnorm16(positions[i] / posScale));
+            buffer.putShort(quantizeSnorm16(positions[i + 1] / posScale));
+            buffer.putShort(quantizeSnorm16(positions[i + 2] / posScale));
+            buffer.putShort((short) 0);
+        }
+        out.writeBytes(buffer.array());
+    }
+
+    /** NORMAL → normalized int8 VEC3 + pad 字节，单位向量直接量化（不用 octahedron，three.js 默认识别）。 */
+    private static void writeQuantizedNormals(ByteArrayOutputStream out, float[] normals) {
+        int vertices = normals.length / 3;
+        byte[] packed = new byte[pad4(vertices * 4)];
+        for (int i = 0; i < vertices; i++) {
+            packed[i * 4] = quantizeSnorm8(normals[i * 3]);
+            packed[i * 4 + 1] = quantizeSnorm8(normals[i * 3 + 1]);
+            packed[i * 4 + 2] = quantizeSnorm8(normals[i * 3 + 2]);
+        }
+        out.writeBytes(packed);
+    }
+
+    /** TEXCOORD_0 → normalized uint16，UV 假定 0..1（图集已重映射）。 */
+    private static void writeQuantizedUvs(ByteArrayOutputStream out, float[] uvs) {
+        if (uvs.length == 0) {
+            return;
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(uvs.length * 2).order(ByteOrder.LITTLE_ENDIAN);
+        for (float uv : uvs) {
+            buffer.putShort(quantizeUnorm16(uv));
+        }
+        out.writeBytes(buffer.array());
+    }
+
+    static float positionMaxAbs(TileGeometry geometry) {
+        float maxAbs = 1f;
+        maxAbs = maxAbsOf(geometry.opaque().positions(), maxAbs);
+        maxAbs = maxAbsOf(geometry.translucent().positions(), maxAbs);
+        return maxAbs;
+    }
+
+    private static float maxAbsOf(float[] values, float start) {
+        float max = start;
+        for (float v : values) {
+            max = Math.max(max, Math.abs(v));
+        }
+        return max;
+    }
+
+    private static float[][] quantizedPositionMinMax(float[] minMax, float posScale, boolean quantize) {
+        if (!quantize) {
+            return new float[][]{
+                    new float[]{minMax[0], minMax[1], minMax[2]},
+                    new float[]{minMax[3], minMax[4], minMax[5]}};
+        }
+        return new float[][]{
+                new float[]{minMax[0] / posScale, minMax[1] / posScale, minMax[2] / posScale},
+                new float[]{minMax[3] / posScale, minMax[4] / posScale, minMax[5] / posScale}};
+    }
+
+    private static short quantizeSnorm16(float v) {
+        float c = Math.max(-1f, Math.min(1f, v));
+        return (short) Math.round(c < 0f ? c * 32768f : c * 32767f);
+    }
+
+    private static byte quantizeSnorm8(float v) {
+        float c = Math.max(-1f, Math.min(1f, v));
+        return (byte) Math.round(c < 0f ? c * 128f : c * 127f);
+    }
+
+    private static short quantizeUnorm16(float v) {
+        float c = Math.max(0f, Math.min(1f, v));
+        return (short) Math.round(c * 65535f);
     }
 
     private static int pad4(int length) {

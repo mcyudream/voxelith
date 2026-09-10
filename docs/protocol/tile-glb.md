@@ -45,3 +45,18 @@
 ## 版本与缓存
 
 瓦片 URL 为 `tiles/hires/{x}/{z}.glb`，前端请求附加 `?v={manifest.version}` 防止 HTTP 强缓存命中旧版（瓦片同 URL 覆盖发布）。
+
+## 可选量化（KHR_mesh_quantization）
+
+默认仍输出未压缩 float32 POSITION/NORMAL/TEXCOORD_0（与一期字节布局完全一致）。
+`EncodeOptions.quantized()` 启用 glTF 扩展 `KHR_mesh_quantization`：
+
+| 属性 | 量化 | 对齐 |
+|---|---|---|
+| POSITION | normalized int16 VEC3，node.scale = 瓦片坐标 maxAbs | 每顶点 8B（xyz + pad） |
+| NORMAL | normalized int8 VEC3 | 每顶点 4B（xyz + pad） |
+| TEXCOORD_0 | normalized uint16 VEC2 | 每顶点 4B |
+| COLOR_0 / `_LIGHT` / indices | 不变 | 同未压缩 |
+
+three.js `GLTFLoader` 原生解码该扩展，前端无需 meshopt decoder。
+图集 PNG 不量化（像素贴图保持无损）。`EXT_meshopt_compression` 熵编码仍预留，需 JNI/CLI 编码器后再接。

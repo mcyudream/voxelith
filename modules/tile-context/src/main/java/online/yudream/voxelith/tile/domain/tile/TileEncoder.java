@@ -12,4 +12,8 @@ public interface TileEncoder {
      * @return glb 字节
      */
     byte[] encode(TileGeometry geometry, byte[] atlasPng);
+
+    default byte[] encode(TileGeometry geometry, byte[] atlasPng, EncodeOptions options) {
+        return encode(geometry, atlasPng);
+    }
 }

@@ -61,7 +61,7 @@ public class GenerateTilesUseCase {
             }
             TileGeometry geometry = assembler.assemble(
                     tile.getKey().x(), tile.getKey().z(), tile.getValue(), atlas.layout());
-            byte[] glb = tileEncoder.encode(geometry, atlasPng);
+            byte[] glb = tileEncoder.encode(geometry, atlasPng, command.encode());
             sink.writeTile(command.outputDir(), tile.getKey(), glb);
             summaries.add(new TileOutcome.TileSummary(
                     tile.getKey(), geometry.quadCount(), geometry.vertexCount(), glb.length, sha1(glb),

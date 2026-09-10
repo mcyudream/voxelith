@@ -137,13 +137,14 @@ pnpm -r build                       # 全部包 + 应用构建
 | Phase 3 | LOD 金字塔 + 前端逐级切换 / LRU 缓存 / Y 切片 | ✅ 已完成 |
 | Phase 4 | 全版本兼容（版本适配 SPI、1.13–1.17 调色板 + 1.12 flattening 映射、多版本回归测试） | ✅ 已完成 |
 | Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、模型采集） | ✅ 已完成（Fabric headless 引导 + BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底 + bake 链路优先消费采集产物） |
-| Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🚧 进行中（管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 对象存储 SPI；meshopt / 压测未开始） |
+| Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🚧 进行中（管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选 KHR_mesh_quantization；meshopt 熵编码 / 十万级压测未开始） |
 
 ## 文档
 
 - `docs/protocol/` — 传输协议与清单 schema 规范（前后端共享，变更须三方同步）；`models-json.md` 为 runtime 采集产物契约
 - `docs/adr/0002-region-incremental-update.md` — region 增量更新（WatchService + 防抖 + 清单局部失效）
 - `docs/adr/0003-object-store-s3-spi.md` — 发布对象存储 FILE 默认 + S3 兼容 SPI（无 AWS SDK）
+- `docs/adr/0004-mesh-quantization.md` — 可选 KHR_mesh_quantization；meshopt 熵编码预留
 - `docs/` — 各链路产物格式说明与 ADR
 
 ## License

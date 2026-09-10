@@ -1,6 +1,7 @@
 package online.yudream.voxelith.tile.application;
 
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
+import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.domain.tile.TileEncoder;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry.Segment;
@@ -21,10 +22,16 @@ public class VertexColorTileExporter {
 
     private final TileEncoder tileEncoder;
     private final TileArtifactSink sink;
+    private final EncodeOptions encode;
 
     public VertexColorTileExporter(TileEncoder tileEncoder, TileArtifactSink sink) {
+        this(tileEncoder, sink, EncodeOptions.uncompressed());
+    }
+
+    public VertexColorTileExporter(TileEncoder tileEncoder, TileArtifactSink sink, EncodeOptions encode) {
         this.tileEncoder = tileEncoder;
         this.sink = sink;
+        this.encode = encode;
     }
 
     public TileOutcome.TileSummary export(Path outputDir, TilePos pos, List<VertexColorQuadData> quads) {
@@ -79,7 +86,7 @@ public class VertexColorTileExporter {
 
         Segment opaque = new Segment(positions, normals, new float[0], colors, lights, indices);
         TileGeometry geometry = new TileGeometry(opaque, Segment.empty(), min, max);
-        byte[] glb = tileEncoder.encode(geometry, null);
+        byte[] glb = tileEncoder.encode(geometry, null, encode);
         sink.writeTile(outputDir, pos, glb);
         return new TileOutcome.TileSummary(
                 pos, quadCount, opaque.vertexCount(), glb.length, sha1(glb), min, max);
