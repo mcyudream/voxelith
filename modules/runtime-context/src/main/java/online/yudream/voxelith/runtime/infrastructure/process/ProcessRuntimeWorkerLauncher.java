@@ -3,6 +3,8 @@ package online.yudream.voxelith.runtime.infrastructure.process;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import online.yudream.voxelith.runtime.domain.HarvestReport;
+import online.yudream.voxelith.runtime.domain.ProvisionedRuntime;
+import online.yudream.voxelith.runtime.domain.RuntimeProvisioner;
 import online.yudream.voxelith.runtime.domain.RuntimeSpec;
 import online.yudream.voxelith.runtime.domain.RuntimeWorkerLauncher;
 
@@ -30,20 +32,38 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
     private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(5);
 
     private final List<Path> workerClasspath;
+    private final RuntimeProvisioner provisioner;
+    private final Path provisionCacheDir;
     private final Duration timeout;
 
     /**
-     * @param workerClasspath worker 子 JVM 的完整 classpath（runtime-worker 产物 + 其依赖）
+     * 纯 stub 自检模式：不 provision 真实运行时，worker 仅运行 LWJGL stub 自检。
+     *
+     * @param workerClasspath worker 子 JVM 的基础 classpath（runtime-worker 产物 + 其依赖）
      */
     public ProcessRuntimeWorkerLauncher(List<Path> workerClasspath) {
         this(workerClasspath, DEFAULT_TIMEOUT);
     }
 
     public ProcessRuntimeWorkerLauncher(List<Path> workerClasspath, Duration timeout) {
+        this(workerClasspath, null, null, timeout);
+    }
+
+    /**
+     * 完整模式：launch 时先 provision（下载/缓存 MC jar + fabric-loader + 依赖），
+     * 再把加载器、映射与依赖库拼入 worker classpath，并将游戏 jar 写入 spec。
+     */
+    public ProcessRuntimeWorkerLauncher(List<Path> workerClasspath, RuntimeProvisioner provisioner,
+                                        Path provisionCacheDir, Duration timeout) {
         if (workerClasspath.isEmpty()) {
             throw new IllegalArgumentException("worker classpath 不能为空");
         }
+        if (provisioner != null && provisionCacheDir == null) {
+            throw new IllegalArgumentException("提供 provisioner 时必须给出 provisionCacheDir");
+        }
         this.workerClasspath = List.copyOf(workerClasspath);
+        this.provisioner = provisioner;
+        this.provisionCacheDir = provisionCacheDir;
         this.timeout = timeout;
     }
 
@@ -51,12 +71,14 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
     public HarvestReport launch(RuntimeSpec spec) {
         try {
             Files.createDirectories(spec.workDir());
-            writeSpec(spec);
+            ProvisionedRuntime runtime = provisioner != null
+                    ? provisioner.provision(spec, provisionCacheDir) : null;
+            writeSpec(spec, runtime);
 
             List<String> command = new ArrayList<>();
             command.add(javaExecutable().toString());
             command.add("-cp");
-            command.add(classpathString());
+            command.add(classpathString(runtime));
             command.add(WORKER_MAIN_CLASS);
             command.add("--spec");
             command.add(spec.workDir().resolve(WorkerProtocol.SPEC_FILE).toString());
@@ -85,7 +107,7 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
         }
     }
 
-    private void writeSpec(RuntimeSpec spec) throws IOException {
+    private void writeSpec(RuntimeSpec spec, ProvisionedRuntime runtime) throws IOException {
         JsonObject json = new JsonObject();
         json.addProperty("mcVersion", spec.mcVersion());
         json.addProperty("loader", spec.loader().name());
@@ -93,6 +115,9 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
         var mods = new com.google.gson.JsonArray();
         spec.modJars().forEach(p -> mods.add(p.toAbsolutePath().toString()));
         json.add("modJars", mods);
+        if (runtime != null) {
+            json.addProperty(WorkerProtocol.SPEC_GAME_JAR, runtime.gameJar().toAbsolutePath().toString());
+        }
         Files.writeString(spec.workDir().resolve(WorkerProtocol.SPEC_FILE),
                 json.toString(), StandardCharsets.UTF_8);
     }
@@ -120,15 +145,25 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
                         ? json.get(WorkerProtocol.FIELD_DURATION).getAsLong() : 0);
     }
 
-    private String classpathString() {
+    private String classpathString(ProvisionedRuntime runtime) {
         StringBuilder sb = new StringBuilder();
         for (Path p : workerClasspath) {
-            if (sb.length() > 0) {
-                sb.append(java.io.File.pathSeparatorChar);
-            }
-            sb.append(p.toAbsolutePath());
+            appendClasspath(sb, p);
+        }
+        if (runtime != null) {
+            // 加载器 + 映射（mappings/mappings.tiny 资源须与 loader 同 CL）+ 全部依赖库
+            appendClasspath(sb, runtime.loaderJar());
+            appendClasspath(sb, runtime.mappingsJar());
+            runtime.libraries().forEach(p -> appendClasspath(sb, p));
         }
         return sb.toString();
+    }
+
+    private static void appendClasspath(StringBuilder sb, Path p) {
+        if (sb.length() > 0) {
+            sb.append(java.io.File.pathSeparatorChar);
+        }
+        sb.append(p.toAbsolutePath());
     }
 
     static Path javaExecutable() {

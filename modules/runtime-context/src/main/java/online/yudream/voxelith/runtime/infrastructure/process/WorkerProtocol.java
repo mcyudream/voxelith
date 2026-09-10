@@ -17,6 +17,9 @@ public final class WorkerProtocol {
     public static final String FIELD_FAILURES = "failures";
     public static final String FIELD_DURATION = "durationMillis";
 
+    /** spec.json 可选字段：provision 产出的 MC 游戏主 jar 绝对路径。 */
+    public static final String SPEC_GAME_JAR = "gameJar";
+
     private WorkerProtocol() {
     }
 }

@@ -59,6 +59,30 @@ class ProcessRuntimeWorkerLauncherTest {
         assertThat(report.failures()).isNotEmpty();
     }
 
+    /**
+     * 真实 headless 引导：provision MC 1.20.1 + fabric-loader 0.16.14，
+     * 子进程内 Knot remap 游戏 jar 后强制初始化 Blocks，验证原版注册表被填满。
+     * 首次运行需 remap（约 30s 级），之后走 .fabric/remappedJars 缓存。
+     */
+    @Test
+    void fabricBootstrapRegistersVanillaBlocks() throws Exception {
+        ProcessRuntimeWorkerLauncher launcher = new ProcessRuntimeWorkerLauncher(
+                workerClasspath(),
+                new online.yudream.voxelith.runtime.infrastructure.provision.HttpRuntimeProvisioner(),
+                Path.of("build/runtime-cache"),
+                Duration.ofMinutes(10));
+        HarvestReport report = new HarvestModelsUseCase(launcher).harvest(
+                new RuntimeSpec("1.20.1", LoaderKind.FABRIC, "0.16.14", List.of(), workDir));
+
+        String log = Files.isRegularFile(workDir.resolve("worker.log"))
+                ? Files.readString(workDir.resolve("worker.log")) : "<无 worker.log>";
+        assertThat(report.ok()).as("failures=%s\n--- worker.log ---\n%s", report.failures(), log).isTrue();
+        assertThat(report.checks())
+                .containsEntry("fabric.knot.init", true)
+                .containsEntry("fabric.blocks.registered", true);
+        assertThat(report.harvested()).isGreaterThan(900);
+    }
+
     /** worker 产物 classes 目录 + gson jar（与本模块测试运行时同源）。 */
     private static List<Path> workerClasspath() {
         Path workerClasses = Path.of(System.getProperty("user.dir"))

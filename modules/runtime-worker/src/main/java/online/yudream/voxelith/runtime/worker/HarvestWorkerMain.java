@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,8 +39,9 @@ public final class HarvestWorkerMain {
 
         Map<String, Boolean> checks = new LinkedHashMap<>();
         JsonArray failures = new JsonArray();
+        JsonObject spec = null;
         try {
-            JsonObject spec = JsonParser.parseString(
+            spec = JsonParser.parseString(
                     Files.readString(specFile, StandardCharsets.UTF_8)).getAsJsonObject();
             checks.put("spec.parsed", spec.has("mcVersion") && spec.has("loader"));
         } catch (IOException | RuntimeException e) {
@@ -49,8 +51,11 @@ public final class HarvestWorkerMain {
 
         LwjglSelfTest.run(checks, failures);
 
-        // 骨架期：真实采集未实现，固定 0；modJars 非空时明确报告为未支持
         int harvested = 0;
+        if (spec != null && spec.has("gameJar")) {
+            harvested = runFabricStage(spec, workDir, checks, failures);
+        }
+
         boolean ok = checks.values().stream().allMatch(Boolean::booleanValue)
                 && failures.size() == 0;
 
@@ -69,6 +74,37 @@ public final class HarvestWorkerMain {
             System.exit(3);
         }
         System.exit(ok ? 0 : 1);
+    }
+
+    /**
+     * fabric 阶段：Knot 引导 + 原版方块注册冒烟。返回注册的方块数（harvested 占位语义，
+     * 待 BakedModel 采集接入后改为采集到的模型数）。
+     */
+    private static int runFabricStage(JsonObject spec, Path workDir,
+                                      Map<String, Boolean> checks, JsonArray failures) {
+        try {
+            List<Path> modJars = new java.util.ArrayList<>();
+            if (spec.has("modJars")) {
+                spec.getAsJsonArray("modJars").forEach(m -> modJars.add(Path.of(m.getAsString())));
+            }
+            ClassLoader gameClassLoader = FabricKnotBootstrap.start(
+                    Path.of(spec.get("gameJar").getAsString()), workDir, modJars);
+            checks.put("fabric.knot.init", true);
+
+            int blocks = MinecraftBlockSmoke.countRegisteredBlocks(gameClassLoader);
+            checks.put("fabric.blocks.registered", blocks >= MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS);
+            if (blocks < MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS) {
+                failures.add("原版方块注册数异常: " + blocks + " < " + MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS);
+            }
+            return blocks;
+        } catch (Throwable t) {
+            checks.putIfAbsent("fabric.knot.init", false);
+            checks.putIfAbsent("fabric.blocks.registered", false);
+            java.io.StringWriter sw = new java.io.StringWriter();
+            t.printStackTrace(new java.io.PrintWriter(sw));
+            failures.add("fabric 引导失败: " + sw);
+            return 0;
+        }
     }
 
     private HarvestWorkerMain() {
