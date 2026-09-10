@@ -10,7 +10,8 @@ import java.util.Optional;
 
 /**
  * 世界读取端口（版本适配 SPI 的承载接口）。实现位于 infrastructure 层。
- * 一期仅现代格式（1.18+ 区块布局，1.20.1 验证）；legacy 适配器 Phase 4 插拔。
+ * 全版本兼容：现代（1.18+）、1.13–1.17 调色板 legacy、1.12- 数字 ID legacy
+ * 由 infrastructure 的 ChunkPayloadParser 注册表按区块 NBT 形状逐块分派。
  */
 public interface WorldReader {
 

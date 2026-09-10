@@ -1,17 +1,10 @@
 package online.yudream.voxelith.world.infrastructure.anvil;
 
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
-import online.yudream.voxelith.sharedkernel.vo.Identifier;
 import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.world.domain.nbt.CompoundTag;
-import online.yudream.voxelith.world.domain.nbt.ListTag;
-import online.yudream.voxelith.world.domain.nbt.StringTag;
-import online.yudream.voxelith.world.domain.nbt.Tag;
-import online.yudream.voxelith.world.domain.world.BlockStateSpec;
 import online.yudream.voxelith.world.domain.world.ChunkData;
-import online.yudream.voxelith.world.domain.world.ChunkSection;
 import online.yudream.voxelith.world.domain.world.LevelInfo;
-import online.yudream.voxelith.world.domain.world.PalettedContainer;
 import online.yudream.voxelith.world.domain.world.WorldReader;
 import online.yudream.voxelith.world.infrastructure.nbt.NbtReader;
 
@@ -29,14 +22,29 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * 现代格式（1.18+，1.20.1 验证）Anvil 世界读取器。
- * 区块布局：根标签直接含 sections[]；section 含 Y / block_states{palette,data} / biomes / BlockLight / SkyLight。
+ * Anvil 世界读取器（全版本）。
+ * region 容器各版本一致；区块 NBT 按形状分派给 {@link ChunkPayloadParser} 注册表：
+ * 现代（1.18+）→ 1.13–1.17 调色板 legacy → 1.12- 数字 ID legacy。
+ * 升级过的存档中不同区块可保持各自写入时的格式，按区块独立分派天然支持混合格式。
  */
 public final class AnvilWorldReader implements WorldReader {
 
     private static final Pattern REGION_FILE = Pattern.compile("r\\.(-?\\d+)\\.(-?\\d+)\\.mca");
 
     private final NbtReader nbtReader = new NbtReader();
+    private final List<ChunkPayloadParser> parsers;
+
+    public AnvilWorldReader() {
+        this(List.of(new ModernChunkParser(), new PalettedLegacyChunkParser(), new NumericLegacyChunkParser()));
+    }
+
+    /** 自定义解析器注册表（SPI 扩展点）：按序匹配，首个 supports 命中者解析。 */
+    public AnvilWorldReader(List<ChunkPayloadParser> parsers) {
+        if (parsers.isEmpty()) {
+            throw new IllegalArgumentException("解析器注册表不能为空");
+        }
+        this.parsers = List.copyOf(parsers);
+    }
 
     @Override
     public LevelInfo readLevelInfo(Path worldDir) {
@@ -117,56 +125,11 @@ public final class AnvilWorldReader implements WorldReader {
 
     private ChunkData parseChunk(ChunkPos pos, byte[] payload) {
         CompoundTag root = nbtReader.readNamedRoot(payload, NbtReader.Compression.NONE);
-        int dataVersion = root.contains("DataVersion") ? root.getInt("DataVersion") : 0;
-        if (!root.contains("sections")) {
-            throw new IllegalStateException(
-                    "区块缺少 sections（pre-1.18 Level 布局），需要 legacy 适配器: " + pos);
-        }
-
-        List<ChunkSection> sections = new ArrayList<>();
-        for (Tag tag : root.getList("sections").value()) {
-            CompoundTag section = (CompoundTag) tag;
-            sections.add(parseSection(section));
-        }
-        return new ChunkData(pos, sections, dataVersion);
-    }
-
-    private ChunkSection parseSection(CompoundTag section) {
-        int y = section.getByte("Y");
-
-        PalettedContainer<BlockStateSpec> blockStates = null;
-        if (section.contains("block_states")) {
-            CompoundTag blockStatesTag = section.getCompound("block_states");
-            List<BlockStateSpec> palette = new ArrayList<>();
-            for (Tag tag : blockStatesTag.getList("palette").value()) {
-                CompoundTag entry = (CompoundTag) tag;
-                Map<String, String> props = new LinkedHashMap<>();
-                if (entry.contains("Properties")) {
-                    CompoundTag properties = entry.getCompound("Properties");
-                    for (String key : properties.keys()) {
-                        props.put(key, properties.getString(key));
-                    }
-                }
-                palette.add(new BlockStateSpec(Identifier.parse(entry.getString("Name")), props));
+        for (ChunkPayloadParser parser : parsers) {
+            if (parser.supports(root)) {
+                return parser.parse(pos, root);
             }
-            long[] data = blockStatesTag.contains("data") ? blockStatesTag.getLongArray("data") : null;
-            blockStates = new PalettedContainer<>(palette, data, 4, 4096);
         }
-
-        PalettedContainer<String> biomes = null;
-        if (section.contains("biomes")) {
-            CompoundTag biomesTag = section.getCompound("biomes");
-            List<String> palette = new ArrayList<>();
-            for (Tag tag : biomesTag.getList("palette").value()) {
-                palette.add(((StringTag) tag).value());
-            }
-            long[] data = biomesTag.contains("data") ? biomesTag.getLongArray("data") : null;
-            biomes = new PalettedContainer<>(palette, data, 1, 64);
-        }
-
-        byte[] skyLight = section.contains("SkyLight") ? section.getByteArray("SkyLight") : null;
-        byte[] blockLight = section.contains("BlockLight") ? section.getByteArray("BlockLight") : null;
-
-        return new ChunkSection(y, blockStates, biomes, skyLight, blockLight);
+        throw new IllegalStateException("未知区块 NBT 布局，无匹配解析器: " + pos);
     }
 }

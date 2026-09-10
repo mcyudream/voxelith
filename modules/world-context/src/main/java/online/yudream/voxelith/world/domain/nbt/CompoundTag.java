@@ -69,6 +69,10 @@ public final class CompoundTag implements Tag {
         return ((LongArrayTag) entries.get(key)).value();
     }
 
+    public int[] getIntArray(String key) {
+        return ((IntArrayTag) entries.get(key)).value();
+    }
+
     public int getIntOrDefault(String key, int fallback) {
         Tag tag = entries.get(key);
         return tag instanceof IntTag i ? i.value() : fallback;

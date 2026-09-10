@@ -180,7 +180,7 @@ public final class SyntheticWorldBuilder {
         for (int i = 0; i < indices.length; i++) {
             int longIndex = i / perLong;
             int slot = i % perLong;
-            data[longIndex] |= (indices[i] & mask) << (slot * bits);
+            data[longIndex] |= ((long) indices[i] & mask) << (slot * bits);
         }
         return data;
     }
