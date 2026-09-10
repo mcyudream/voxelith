@@ -1,6 +1,14 @@
 # Yudream Voxelith Map Core（VMC）
 
-基于 Three.js 的 Minecraft 地图渲染核心，支持 glTF/3D Tiles、多级 LOD 与 .vxt 瓦片，实现从地图解析到 Web 渲染的完整链路。
+![Java](https://img.shields.io/badge/Java-21-007396?logo=openjdk&logoColor=white)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3-6DB33F?logo=springboot&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white)
+![Three.js](https://img.shields.io/badge/Three.js-0.179-000000?logo=threedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
+基于 Three.js 的 Minecraft 地图渲染核心：从存档解析到 Web 渲染的完整链路，支持 glTF 瓦片、多级 LOD 金字塔、光照烘焙与 .vxt 瓦片格式。
 
 - **组织**：Yudream
 - **主仓库**：voxelith
@@ -14,6 +22,15 @@ VMC 是一个类 BlueMap 的 Minecraft Web 地图渲染系统：
 - **后端（Java 21 + Spring Boot 3）**：自动编排渲染管线 `resolve → scan → bake → tile → lod → manifest`，从存档（Anvil）/ schematic 解析世界，烘焙光照与 AO，产出 glb 瓦片金字塔与 JSON 清单。严格四层 DDD 限界上下文模块，ArchUnit 守护架构边界。
 - **前端（Vue 3 + TS + Three.js，pnpm workspace）**：瓦片流式加载、多级 LOD 逐级过渡、LRU 缓存滞回淘汰、设备分档 + 自适应视距、自由飞行 / 俯视倾斜控制器、Y 轴切片、标注层。
 - **协议**：自定义 JSON 清单 + glb 瓦片（光照/AO 烘焙进顶点属性），像素贴图图集保持无损 + NearestFilter。
+
+## 特性
+
+- **全链路自动编排**：管线状态机逐链路产出落盘中间产物与校验报告，支持断点续跑。
+- **烘焙级画质**：sky/block light + 角点 AO 直接读取存档 NBT 烘进顶点属性；流体与含水方块、生物群系染色、混合分辨率图集均已打通。
+- **无感 LOD**：视距内标准 hires 渲染，超视距按水平距离每翻倍粗一级 LOD，逐级过渡、无雾效遮掩、无硬剔除。
+- **性能自适应**：设备分档（高/中/低）+ FPS 窗口化动态调节视距，桌面目标 60fps、移动端 30fps。
+- **色彩管理**：线性工作流 + sRGB 创作基准，可选 Display P3 广色域输出。
+- **实测规模**：西南科大全校 20769 瓦片、默认存档 7866 区块已全量渲染发布，浏览器全图 67 次 draw call。
 
 ## Monorepo 结构
 
@@ -51,7 +68,7 @@ voxelith/
 | `@yudream/voxelith-skyline` | 规划 | 远景 LOD / 天际线渲染增强 |
 | `@yudream/voxelith-tiles` | 规划 | .vxt 瓦片格式与 3D Tiles 互操作 |
 
-> 目录名与包名一一对应（pnpm workspace 按 `packages/*`、`apps/*` glob 收纳）；Java 根包名为 `online.yudream.voxelith`。
+> Java 根包名为 `online.yudream.voxelith`，后端配置前缀 `yudream.voxelith.*`。
 
 ## 快速开始
 
@@ -110,6 +127,18 @@ pnpm -r build                       # 全部包 + 应用构建
 - **烘焙光照**：skyLight/blockLight/AO 烘进 glb 顶点属性，着色器按昼夜参数化调光。
 - **瓦片缓存**：双阈值滞回 LRU（数量 + 字节），帧内 mark-used / microtask 淘汰。
 
+## 路线图
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| Phase 0 | Monorepo 骨架、四层 DDD + ArchUnit 守护、前后端壳互通 | ✅ 已完成 |
+| Phase 1 | 垂直切片：resolve→scan→bake→tile→manifest→浏览器漫游 | ✅ 已完成 |
+| Phase 2 | 光照 + AO 烘焙、流体、生物群系染色、图集无损打包 | ✅ 已完成 |
+| Phase 3 | LOD 金字塔 + 前端逐级切换 / LRU 缓存 / Y 切片 | ✅ 已完成 |
+| Phase 4 | 全版本兼容（legacy 1.12 flattening 映射、nibble 光照） | 🔲 未开始 |
+| Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、模型采集） | 🔲 未开始 |
+| Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🔲 未开始 |
+
 ## 文档
 
 - `docs/protocol/` — 传输协议与清单 schema 规范（前后端共享，变更须三方同步）
@@ -117,4 +146,4 @@ pnpm -r build                       # 全部包 + 应用构建
 
 ## License
 
-待定（私有仓库）。
+[MIT](LICENSE)
