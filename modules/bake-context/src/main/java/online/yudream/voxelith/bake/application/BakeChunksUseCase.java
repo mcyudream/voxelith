@@ -1,5 +1,7 @@
 package online.yudream.voxelith.bake.application;
 
+import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
+import online.yudream.voxelith.bake.domain.mesh.BiomeTintResolver;
 import online.yudream.voxelith.bake.domain.mesh.ChunkMeshBuilder;
 import online.yudream.voxelith.bake.domain.mesh.ChunkMeshBuilder.ChunkMeshResult;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
@@ -26,15 +28,24 @@ public class BakeChunksUseCase {
     private final ResolvedResourceCatalog catalog;
     private final WorldBlockAccess world;
     private final BakeArtifactSink sink;
+    /** runtime 采集的真实 BakedModel quad 源，null = 纯静态模型解析。 */
+    private final PrebakedQuadSource prebaked;
 
     public BakeChunksUseCase(ResolvedResourceCatalog catalog, WorldBlockAccess world, BakeArtifactSink sink) {
+        this(catalog, world, sink, null);
+    }
+
+    public BakeChunksUseCase(ResolvedResourceCatalog catalog, WorldBlockAccess world,
+                             BakeArtifactSink sink, PrebakedQuadSource prebaked) {
         this.catalog = catalog;
         this.world = world;
         this.sink = sink;
+        this.prebaked = prebaked;
     }
 
     public BakeOutcome bake(BakeCommand command) {
-        ChunkMeshBuilder builder = new ChunkMeshBuilder(catalog, world);
+        ChunkMeshBuilder builder = new ChunkMeshBuilder(catalog, world,
+                new BiomeTintResolver(catalog, world), prebaked);
         int total = command.chunks().size();
         AtomicInteger done = new AtomicInteger();
         long startedAt = System.currentTimeMillis();

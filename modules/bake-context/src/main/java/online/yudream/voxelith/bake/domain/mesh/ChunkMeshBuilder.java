@@ -2,6 +2,7 @@ package online.yudream.voxelith.bake.domain.mesh;
 
 import online.yudream.voxelith.bake.domain.geometry.ModelGeometryBaker;
 import online.yudream.voxelith.bake.domain.geometry.ModelOcclusion;
+import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
 import online.yudream.voxelith.bake.domain.geometry.Quad;
 import online.yudream.voxelith.bake.domain.mesh.VertexLightSampler.SectionGrid;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
@@ -35,6 +36,8 @@ public final class ChunkMeshBuilder {
     private final VertexLightSampler lightSampler;
     private final FluidMesher fluidMesher;
     private final TintResolver tintResolver;
+    /** runtime 采集的真实 BakedModel quad 源，null = 纯静态模型解析。 */
+    private final PrebakedQuadSource prebaked;
 
     /** 遮挡判定缓存：模型 id + 方块 id → 各方向是否遮挡。 */
     private final Map<String, Map<Direction, Boolean>> occlusionCache = new ConcurrentHashMap<>();
@@ -43,13 +46,19 @@ public final class ChunkMeshBuilder {
     private final Map<String, Boolean> opaqueCubeCache = new ConcurrentHashMap<>();
 
     public ChunkMeshBuilder(ResolvedResourceCatalog catalog, WorldBlockAccess world) {
-        this(catalog, world, new BiomeTintResolver(catalog, world));
+        this(catalog, world, new BiomeTintResolver(catalog, world), null);
     }
 
     public ChunkMeshBuilder(ResolvedResourceCatalog catalog, WorldBlockAccess world, TintResolver tintResolver) {
+        this(catalog, world, tintResolver, null);
+    }
+
+    public ChunkMeshBuilder(ResolvedResourceCatalog catalog, WorldBlockAccess world,
+                            TintResolver tintResolver, PrebakedQuadSource prebaked) {
         this.catalog = catalog;
         this.world = world;
         this.tintResolver = tintResolver;
+        this.prebaked = prebaked;
         this.lightSampler = new VertexLightSampler(world, this::isOpaqueCube);
         this.fluidMesher = new FluidMesher(world, this::occludes, lightSampler, tintResolver);
     }
@@ -94,6 +103,20 @@ public final class ChunkMeshBuilder {
         // 与模型是否解析成功无关（即使模型缺失，水体也不应留下空气洞）
         if (FluidMesher.isWaterlogged(state)) {
             quads.addAll(fluidMesher.meshWaterlogged(state, x, y, z, lightGrid));
+        }
+        // runtime 采集的真实 BakedModel 优先：quad 已含变体旋转，
+        // 仍复用本链路的 cullface 剔除与光照/AO/染色烘焙
+        if (prebaked != null) {
+            Optional<List<Quad>> harvested = prebaked.quads(state.block(), state.properties());
+            if (harvested.isPresent()) {
+                for (Quad quad : harvested.get()) {
+                    if (isCulled(quad, x, y, z)) {
+                        continue;
+                    }
+                    quads.add(toWorld(quad, state.block(), x, y, z, lightGrid));
+                }
+                return;
+            }
         }
         Identifier blockId = Identifier.parse(state.block());
         List<VariantGroup> groups = catalog.selectVariantGroups(blockId, state.properties());
