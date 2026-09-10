@@ -3,13 +3,17 @@ package online.yudream.voxelith.tile.infrastructure.bootstrap;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
 import online.yudream.voxelith.tile.application.GenerateTilesUseCase;
 import online.yudream.voxelith.tile.application.PublishManifestUseCase;
+import online.yudream.voxelith.tile.application.PublishedAtlas;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
 import online.yudream.voxelith.tile.application.VertexColorTileExporter;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestPublisher;
+import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileTileArtifactSink;
 import online.yudream.voxelith.tile.infrastructure.glb.GlbTileEncoder;
 import online.yudream.voxelith.tile.infrastructure.image.CatalogTexturePixelSource;
 import online.yudream.voxelith.tile.infrastructure.image.PngImageCodec;
+
+import java.nio.file.Path;
 
 /**
  * tile 上下文组合根：以资源目录为贴图来源装配 GenerateTilesUseCase。
@@ -39,5 +43,10 @@ public final class TileContextBootstrap {
     /** 无纹理纯色瓦片导出（LOD 瓦片编码落盘用）。 */
     public static VertexColorTileExporter openVertexColorTileExporter() {
         return new VertexColorTileExporter(new GlbTileEncoder(), new FileTileArtifactSink());
+    }
+
+    /** 已发布图集读写（增量重跑复用 UV）。 */
+    public static PublishedAtlas openPublishedAtlas(Path publishRoot) {
+        return new FilePublishedAtlas(publishRoot);
     }
 }

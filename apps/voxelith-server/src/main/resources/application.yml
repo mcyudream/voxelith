@@ -19,3 +19,9 @@ yudream:
       region: us-east-1
       access-key:
       secret-key:
+    incremental:
+      enabled: false
+      world-dir:           # 存档根目录（含 region/）
+      pack-dir:            # 资源包/原版 jar 路径，bake 静态模型用
+      dimension: minecraft:overworld
+      map-id: demo

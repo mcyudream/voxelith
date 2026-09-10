@@ -1,6 +1,7 @@
 package online.yudream.voxelith.world.infrastructure.anvil;
 
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
+import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.world.application.WorldBlockAccess;
 import online.yudream.voxelith.world.application.dto.BlockStateData;
 import online.yudream.voxelith.world.domain.world.BlockStateSpec;
@@ -62,6 +63,11 @@ public final class AnvilWorldBlockAccess implements WorldBlockAccess {
         return chunk(chunk)
                 .map(data -> data.orderedSections().stream().mapToInt(ChunkSection::y).toArray())
                 .orElse(new int[0]);
+    }
+
+    @Override
+    public void invalidateRegion(RegionPos region) {
+        chunkCache.keySet().removeIf(pos -> pos.toRegionPos().equals(region));
     }
 
     @Override

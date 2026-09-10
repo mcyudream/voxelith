@@ -137,7 +137,7 @@ pnpm -r build                       # 全部包 + 应用构建
 | Phase 3 | LOD 金字塔 + 前端逐级切换 / LRU 缓存 / Y 切片 | ✅ 已完成 |
 | Phase 4 | 全版本兼容（版本适配 SPI、1.13–1.17 调色板 + 1.12 flattening 映射、多版本回归测试） | ✅ 已完成 |
 | Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、模型采集） | ✅ 已完成（Fabric headless 引导 + BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底 + bake 链路优先消费采集产物） |
-| Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🚧 进行中（管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选量化；meshopt 熵编码未接。十万级全量烘焙仍走 jshell，编排侧已用合成多 region 验收分片续跑） |
+| Phase 6 | 规模化与增量：十万级区块压测、region 监听增量更新、S3 存储 | 🚧 进行中（管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选量化 + IncrementalRenderPort 真实 bake→tile→lod；meshopt 熵编码未接。十万级全量烘焙仍走 jshell） |
 
 ## 文档
 
