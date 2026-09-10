@@ -2,7 +2,9 @@ package online.yudream.voxelith.lod.application;
 
 import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
 import online.yudream.voxelith.bake.application.dto.BakedQuadData;
+import online.yudream.voxelith.lod.domain.heightfield.Heightfield;
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
+import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
 import online.yudream.voxelith.tile.application.TileOutcome;
@@ -155,6 +157,50 @@ class GenerateLodPyramidUseCaseTest {
         assertThat(outcome.levels()).isEqualTo(2);
         assertThat(outcome.tiles().stream().map(t -> t.pos().level()).distinct().sorted())
                 .containsExactly(1, 2);
+    }
+
+    @Test
+    void incrementalMergeKeepsUnrelatedColumnsAndOnlyMeshesOverlappingTiles() {
+        RecordingEncoder encoder = new RecordingEncoder();
+        GenerateLodPyramidUseCase useCase =
+                new GenerateLodPyramidUseCase(graySampler(), exporter(encoder));
+        InMemoryHeightfieldStore store = new InMemoryHeightfieldStore();
+
+        useCase.generate(new LodCommand(meshes(
+                quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1),
+                quad(600, 50, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)
+        ), Path.of("build/lod-test"), 0, store, List.of()));
+        assertThat(store.field.topY(0, 0)).isEqualTo(64f);
+        int farCx = Math.floorDiv(600, 2);
+        assertThat(store.field.topY(farCx, 0)).isEqualTo(50f);
+
+        encoder.geometries.clear();
+        LodOutcome incremental = useCase.generate(new LodCommand(
+                Map.of(new ChunkPos(0, 0), new BakedChunkMeshData(new ChunkPos(0, 0),
+                        List.of(quad(2, 80, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)),
+                        Map.of(), 1)),
+                Path.of("build/lod-test"), 0, store, List.of(new RegionPos(0, 0))));
+
+        assertThat(store.field.topY(0, 0)).isNaN();
+        assertThat(store.field.topY(1, 0)).isEqualTo(80f);
+        assertThat(store.field.topY(farCx, 0)).isEqualTo(50f);
+        assertThat(incremental.tiles()).isNotEmpty();
+        assertThat(incremental.tiles().getFirst().pos().level()).isEqualTo(1);
+    }
+
+    private static final class InMemoryHeightfieldStore
+            implements online.yudream.voxelith.lod.application.HeightfieldStore {
+        Heightfield field;
+
+        @Override
+        public java.util.Optional<Heightfield> load() {
+            return java.util.Optional.ofNullable(field);
+        }
+
+        @Override
+        public void save(Heightfield next) {
+            field = next;
+        }
     }
 
     /** 提取 opaque 分段中朝上面的逐顶点 RGB。 */

@@ -1,6 +1,7 @@
 package online.yudream.voxelith.orchestration.application;
 
 import online.yudream.voxelith.orchestration.domain.IncrementalJob;
+import online.yudream.voxelith.orchestration.domain.IncrementalPatch;
 import online.yudream.voxelith.orchestration.domain.IncrementalRenderPort;
 import online.yudream.voxelith.orchestration.domain.ManifestInvalidatePort;
 import online.yudream.voxelith.orchestration.domain.RegionWatchPort;
@@ -9,7 +10,6 @@ import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
@@ -84,8 +84,8 @@ public class IncrementalUpdateUseCase implements AutoCloseable {
         }
         IncrementalJob job = new IncrementalJob(mapId, regions, System.currentTimeMillis());
         try {
-            Map<String, String> sha1ByUrl = render.rerender(job);
-            invalidate.invalidate(mapId, sha1ByUrl);
+            IncrementalPatch patch = render.rerender(job);
+            invalidate.invalidate(mapId, patch);
         } catch (Exception e) {
             throw new IllegalStateException("增量重渲染失败: " + job.regions(), e);
         }

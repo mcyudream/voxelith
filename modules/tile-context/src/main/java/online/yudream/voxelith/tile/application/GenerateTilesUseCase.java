@@ -69,6 +69,7 @@ public class GenerateTilesUseCase {
             textureCount = layout.cellIndex().size();
             atlasSize = atlas.pixelSize();
             atlasFile = sink.writeAtlas(command.outputDir(), atlasPng);
+            sink.writeAtlasLayout(command.outputDir(), layout);
         }
 
         TileMeshAssembler assembler = new TileMeshAssembler();

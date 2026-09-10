@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.application.TileArtifactSink;
 import online.yudream.voxelith.tile.application.TileOutcome;
+import online.yudream.voxelith.tile.domain.atlas.AtlasLayout;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -34,6 +35,11 @@ public final class FileTileArtifactSink implements TileArtifactSink {
     @Override
     public Path writeAtlas(Path outputDir, byte[] png) {
         return write(outputDir.resolve("atlas.png"), png);
+    }
+
+    @Override
+    public Path writeAtlasLayout(Path outputDir, AtlasLayout layout) {
+        return AtlasLayoutFiles.write(outputDir.resolve(AtlasLayoutFiles.FILE_NAME), layout);
     }
 
     @Override

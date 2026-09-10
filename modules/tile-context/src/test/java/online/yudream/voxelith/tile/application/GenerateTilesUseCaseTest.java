@@ -58,6 +58,7 @@ class GenerateTilesUseCaseTest {
         assertTrue(Files.isRegularFile(outputDir.resolve("tiles/hires/0/0.glb")));
         assertTrue(Files.isRegularFile(outputDir.resolve("tiles/hires/1/0.glb")));
         assertTrue(Files.isRegularFile(outcome.atlasFile()));
+        assertTrue(Files.isRegularFile(outputDir.resolve("atlas-layout.json")));
         assertTrue(Files.isRegularFile(outcome.reportFile()));
 
         TileOutcome.TileSummary first = outcome.tiles().getFirst();

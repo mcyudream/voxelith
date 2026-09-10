@@ -58,6 +58,8 @@ class GenerateTilesReuseAtlasTest {
         assertEquals(16, outcome.atlasSize());
         assertTrue(Files.isRegularFile(outputDir.resolve("tiles/hires/0/0.glb")));
         assertTrue(Files.isRegularFile(outcome.atlasFile()));
+        assertTrue(Files.notExists(outputDir.resolve("atlas-layout.json")),
+                "复用图集不得重写 atlas-layout.json");
     }
 
     @Test

@@ -59,10 +59,48 @@ class HeightfieldTest {
     }
 
     @Test
-    void emptySamplesYieldEmptyField() {
-        Heightfield field = Heightfield.fromSamples(List.of(), 2);
-        assertThat(field.width()).isZero();
-        assertThat(field.depth()).isZero();
+    void mergeUnionAndOtherOverwritesOverlap() {
+        Heightfield left = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 10, 0.5f, 0x111111),
+                new LodSample(2.5f, 20, 0.5f, 0x222222)), 2);
+        Heightfield right = Heightfield.fromSamples(List.of(
+                new LodSample(2.5f, 99, 0.5f, 0x999999),
+                new LodSample(4.5f, 30, 0.5f, 0x333333)), 2);
+        Heightfield merged = left.merge(right);
+        assertThat(merged.topY(0, 0)).isEqualTo(10f);
+        assertThat(merged.topY(1, 0)).isEqualTo(99f);
+        assertThat(merged.rgb(1, 0)).isEqualTo(0x999999);
+        assertThat(merged.topY(2, 0)).isEqualTo(30f);
+    }
+
+    @Test
+    void clearColumnsThenMergeReplacesRegion() {
+        Heightfield world = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 10, 0.5f, 1),
+                new LodSample(2.5f, 20, 0.5f, 2)), 2);
+        int[] bounds = Heightfield.regionColumnBounds(0, 0, 2);
+        assertThat(bounds[0]).isEqualTo(0);
+        Heightfield cleared = world.clearColumns(1, 0, 1, 0);
+        assertThat(cleared.topY(0, 0)).isEqualTo(10f);
+        assertThat(cleared.topY(1, 0)).isNaN();
+        Heightfield replacement = Heightfield.fromSamples(List.of(
+                new LodSample(2.5f, 77, 0.5f, 7)), 2);
+        Heightfield merged = cleared.merge(replacement);
+        assertThat(merged.topY(1, 0)).isEqualTo(77f);
+        assertThat(merged.rgb(1, 0)).isEqualTo(7);
+    }
+
+    @Test
+    void restoreRoundTripPreservesGrid() {
+        Heightfield original = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 64, 0.5f, 0xAABBCC)), 2);
+        Heightfield restored = Heightfield.restore(
+                original.footprint(), original.originX(), original.originZ(),
+                original.width(), original.depth(), original.copyTopY(), original.copyRgb(),
+                original.floorY());
+        assertThat(restored.topY(0, 0)).isEqualTo(64f);
+        assertThat(restored.rgb(0, 0)).isEqualTo(0xAABBCC);
+        assertThat(restored.floorY()).isEqualTo(64f);
     }
 
     @Test

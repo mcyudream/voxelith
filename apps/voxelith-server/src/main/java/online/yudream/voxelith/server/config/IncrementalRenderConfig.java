@@ -3,6 +3,7 @@ package online.yudream.voxelith.server.config;
 import online.yudream.voxelith.bake.application.BakeChunksUseCase;
 import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
 import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
+import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
 import online.yudream.voxelith.orchestration.application.IncrementalUpdateUseCase;
 import online.yudream.voxelith.orchestration.domain.IncrementalRenderPort;
 import online.yudream.voxelith.orchestration.domain.ManifestInvalidatePort;
@@ -75,9 +76,11 @@ public class IncrementalRenderConfig {
         GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                 TileContextBootstrap.openTextureColorSampler(incrementalCatalog),
                 TileContextBootstrap.openVertexColorTileExporter());
+        Path mapDir = Path.of(publishDir).resolve(mapId);
         return new RegionIncrementalRenderAdapter(
                 incrementalWorld, bake, tiles, lod, publishedAtlas,
-                Path.of(publishDir).resolve(mapId));
+                new FileHeightfieldStore(mapDir.resolve("heightfield.bin")),
+                mapDir);
     }
 
     @Bean

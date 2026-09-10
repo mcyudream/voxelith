@@ -48,6 +48,30 @@ class InvalidateManifestUseCaseTest {
                 .containsExactly("tiles/hires/0/0.glb", "tiles/hires/0/1.glb");
     }
 
+    @Test
+    void insertsNewTilesAndExpandsBounds() {
+        FileManifestStore store = new FileManifestStore(publishRoot);
+        MapManifest original = new MapManifest(1, "demo", "演示", "aaaaaaaaaaaa", "t0",
+                new MapManifest.Settings(32, 1),
+                new float[]{0, 0, 0}, new float[]{32, 64, 32},
+                new MapManifest.AtlasRef("atlas.png", 256, 4),
+                List.of(tile("tiles/hires/0/0.glb", "sha-keep")));
+        store.save("demo", original);
+
+        ManifestPatch.NewTile insert = new ManifestPatch.NewTile(
+                "tiles/hires/2/3.glb", 0, 2, 3, "sha-new", 20, 4,
+                new float[]{64, 0, 96}, new float[]{96, 80, 128});
+        MapManifest updated = new InvalidateManifestUseCase(store)
+                .invalidate("demo", new ManifestPatch(Map.of(), List.of(insert)));
+
+        assertThat(updated.tiles()).hasSize(2);
+        assertThat(updated.tiles()).extracting(MapManifest.TileEntry::url)
+                .containsExactly("tiles/hires/0/0.glb", "tiles/hires/2/3.glb");
+        assertThat(updated.boundsMax()[0]).isEqualTo(96f);
+        assertThat(updated.boundsMax()[1]).isEqualTo(80f);
+        assertThat(updated.boundsMax()[2]).isEqualTo(128f);
+    }
+
     private static MapManifest.TileEntry tile(String url, String sha1) {
         return new MapManifest.TileEntry(0, 0, 0, url, sha1, 10, 1,
                 new float[]{0, 0, 0}, new float[]{1, 1, 1});

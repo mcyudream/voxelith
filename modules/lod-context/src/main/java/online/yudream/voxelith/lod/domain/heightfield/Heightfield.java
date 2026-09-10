@@ -72,6 +72,114 @@ public final class Heightfield {
         return new Heightfield(footprint, minCx, minCz, width, depth, topY, rgb, floorY);
     }
 
+    /** 二进制仓储还原（长度必须为 width*depth）。 */
+    public static Heightfield restore(int footprint, int originX, int originZ, int width, int depth,
+                                      float[] topY, int[] rgb, float floorY) {
+        if (topY.length != width * depth || rgb.length != width * depth) {
+            throw new IllegalArgumentException("高度场数组长度必须为 width*depth");
+        }
+        return new Heightfield(footprint, originX, originZ, width, depth, topY, rgb, floorY);
+    }
+
+    /**
+     * 某 region（512×512 方块）在给定 footprint 下覆盖的闭区间柱坐标
+     * {@code [minCx, minCz, maxCx, maxCz]}。
+     */
+    public static int[] regionColumnBounds(int regionX, int regionZ, int footprint) {
+        int minBlockX = regionX << 9;
+        int maxBlockX = minBlockX + 511;
+        int minBlockZ = regionZ << 9;
+        int maxBlockZ = minBlockZ + 511;
+        return new int[]{
+                Math.floorDiv(minBlockX, footprint),
+                Math.floorDiv(minBlockZ, footprint),
+                Math.floorDiv(maxBlockX, footprint),
+                Math.floorDiv(maxBlockZ, footprint)
+        };
+    }
+
+    /**
+     * 把闭区间柱矩形清为空柱（NaN）。无重叠时返回 this。
+     * 增量替换 region 时先清再 merge，避免拆除后残留旧柱。
+     */
+    public Heightfield clearColumns(int minCx, int minCz, int maxCx, int maxCz) {
+        if (width == 0 || depth == 0) {
+            return this;
+        }
+        int x0 = Math.max(minCx, originX);
+        int x1 = Math.min(maxCx, originX + width - 1);
+        int z0 = Math.max(minCz, originZ);
+        int z1 = Math.min(maxCz, originZ + depth - 1);
+        if (x0 > x1 || z0 > z1) {
+            return this;
+        }
+        float[] nextY = topY.clone();
+        int[] nextRgb = rgb.clone();
+        for (int z = z0; z <= z1; z++) {
+            for (int x = x0; x <= x1; x++) {
+                int index = (z - originZ) * width + (x - originX);
+                nextY[index] = Float.NaN;
+                nextRgb[index] = 0;
+            }
+        }
+        float nextFloor = Float.MAX_VALUE;
+        for (float y : nextY) {
+            if (!Float.isNaN(y)) {
+                nextFloor = Math.min(nextFloor, y);
+            }
+        }
+        return new Heightfield(footprint, originX, originZ, width, depth, nextY, nextRgb,
+                nextFloor == Float.MAX_VALUE ? 0 : nextFloor);
+    }
+
+    /**
+     * 并入另一高度场：并集包围盒，other 覆盖重叠柱（含 NaN）。
+     * footprint 必须一致。
+     */
+    public Heightfield merge(Heightfield other) {
+        if (other.width == 0 || other.depth == 0) {
+            return this;
+        }
+        if (width == 0 || depth == 0) {
+            return other;
+        }
+        if (other.footprint != footprint) {
+            throw new IllegalArgumentException(
+                    "高度场合并 footprint 必须一致: " + footprint + " vs " + other.footprint);
+        }
+        int minX = Math.min(originX, other.originX);
+        int minZ = Math.min(originZ, other.originZ);
+        int maxX = Math.max(originX + width - 1, other.originX + other.width - 1);
+        int maxZ = Math.max(originZ + depth - 1, other.originZ + other.depth - 1);
+        int w = maxX - minX + 1;
+        int d = maxZ - minZ + 1;
+        float[] nextY = new float[w * d];
+        Arrays.fill(nextY, Float.NaN);
+        int[] nextRgb = new int[w * d];
+        copyInto(nextY, nextRgb, w, minX, minZ, this);
+        copyInto(nextY, nextRgb, w, minX, minZ, other);
+        float nextFloor = Float.MAX_VALUE;
+        for (float y : nextY) {
+            if (!Float.isNaN(y)) {
+                nextFloor = Math.min(nextFloor, y);
+            }
+        }
+        return new Heightfield(footprint, minX, minZ, w, d, nextY, nextRgb,
+                nextFloor == Float.MAX_VALUE ? 0 : nextFloor);
+    }
+
+    private static void copyInto(float[] destY, int[] destRgb, int destWidth,
+                                 int destOriginX, int destOriginZ, Heightfield src) {
+        for (int z = 0; z < src.depth; z++) {
+            for (int x = 0; x < src.width; x++) {
+                int destIndex = (src.originZ + z - destOriginZ) * destWidth + (src.originX + x - destOriginX);
+                int srcIndex = z * src.width + x;
+                destY[destIndex] = src.topY[srcIndex];
+                destRgb[destIndex] = src.rgb[srcIndex];
+            }
+        }
+    }
+
     /** 聚合出上一层（footprint ×2）：父柱 = 2×2 子柱中柱顶最高者，颜色随之传递。 */
     public Heightfield aggregate() {
         int parentFootprint = footprint * 2;
@@ -114,12 +222,28 @@ public final class Heightfield {
         return footprint;
     }
 
+    public int originX() {
+        return originX;
+    }
+
+    public int originZ() {
+        return originZ;
+    }
+
     public int width() {
         return width;
     }
 
     public int depth() {
         return depth;
+    }
+
+    public float[] copyTopY() {
+        return topY.clone();
+    }
+
+    public int[] copyRgb() {
+        return rgb.clone();
     }
 
     public float floorY() {

@@ -24,8 +24,13 @@ public class InvalidateManifestUseCase {
     }
 
     public MapManifest invalidate(String mapId, Map<String, String> sha1ByUrl) {
+        return invalidate(mapId, ManifestPatch.sha1Only(sha1ByUrl));
+    }
+
+    public MapManifest invalidate(String mapId, ManifestPatch patch) {
         MapManifest current = store.load(mapId)
                 .orElseThrow(() -> new IllegalStateException("清单不存在: " + mapId));
+        Map<String, String> sha1ByUrl = patch.sha1ByUrl();
         List<MapManifest.TileEntry> next = new ArrayList<>();
         for (MapManifest.TileEntry tile : current.tiles()) {
             if (!sha1ByUrl.containsKey(tile.url())) {
@@ -40,10 +45,34 @@ public class InvalidateManifestUseCase {
                     tile.level(), tile.x(), tile.z(), tile.url(),
                     sha1, tile.bytes(), tile.quads(), tile.min(), tile.max()));
         }
+        java.util.Set<String> existing = new java.util.HashSet<>();
+        for (MapManifest.TileEntry tile : next) {
+            existing.add(tile.url());
+        }
+        for (ManifestPatch.NewTile insert : patch.inserts()) {
+            if (existing.contains(insert.url())) {
+                continue;
+            }
+            next.add(new MapManifest.TileEntry(
+                    insert.level(), insert.x(), insert.z(), insert.url(),
+                    insert.sha1(), insert.bytes(), insert.quads(), insert.min(), insert.max()));
+            existing.add(insert.url());
+        }
+        float[] min = current.boundsMin().clone();
+        float[] max = current.boundsMax().clone();
+        int maxLevel = Math.max(0, current.settings().lodCount() - 1);
+        for (MapManifest.TileEntry tile : next) {
+            maxLevel = Math.max(maxLevel, tile.level());
+            for (int i = 0; i < 3; i++) {
+                min[i] = Math.min(min[i], tile.min()[i]);
+                max[i] = Math.max(max[i], tile.max()[i]);
+            }
+        }
         MapManifest updated = new MapManifest(
                 current.formatVersion(), current.mapId(), current.name(),
                 contentVersion(next), Instant.now().toString(),
-                current.settings(), current.boundsMin(), current.boundsMax(),
+                new MapManifest.Settings(current.settings().hiresTileSize(), maxLevel + 1),
+                min, max,
                 current.atlas(), List.copyOf(next));
         store.save(mapId, updated);
         return updated;

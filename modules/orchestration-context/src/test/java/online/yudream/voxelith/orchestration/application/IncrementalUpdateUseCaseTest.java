@@ -1,6 +1,7 @@
 package online.yudream.voxelith.orchestration.application;
 
 import online.yudream.voxelith.orchestration.domain.IncrementalJob;
+import online.yudream.voxelith.orchestration.domain.IncrementalPatch;
 import online.yudream.voxelith.orchestration.domain.IncrementalRenderPort;
 import online.yudream.voxelith.orchestration.domain.ManifestInvalidatePort;
 import online.yudream.voxelith.orchestration.domain.RegionWatchPort;
@@ -67,7 +68,7 @@ class IncrementalUpdateUseCaseTest {
             if (jobs.size() == 1) {
                 holdFirst.await(2, TimeUnit.SECONDS);
             }
-            return Map.of();
+            return IncrementalPatch.empty();
         };
         RecordingInvalidate invalidate = new RecordingInvalidate();
         useCase = new IncrementalUpdateUseCase(
@@ -98,9 +99,9 @@ class IncrementalUpdateUseCaseTest {
                 new NoopWatch(),
                 job -> {
                     renders.incrementAndGet();
-                    return Map.of();
+                    return IncrementalPatch.empty();
                 },
-                (mapId, sha1) -> { },
+                (mapId, patch) -> { },
                 scheduler, Duration.ofMillis(200), "demo");
         useCase.start();
         useCase.onRegionChanged(new RegionPos(0, 0));
@@ -124,10 +125,10 @@ class IncrementalUpdateUseCaseTest {
         final CountDownLatch latch = new CountDownLatch(1);
 
         @Override
-        public Map<String, String> rerender(IncrementalJob job) {
+        public IncrementalPatch rerender(IncrementalJob job) {
             jobs.add(job);
             latch.countDown();
-            return Map.of("tiles/hires/0/0.glb", "abc");
+            return new IncrementalPatch(Map.of("tiles/hires/0/0.glb", "abc"), List.of());
         }
 
         boolean await(int n, long timeout, TimeUnit unit) throws InterruptedException {
@@ -139,8 +140,8 @@ class IncrementalUpdateUseCaseTest {
         final List<Map.Entry<String, Map<String, String>>> calls = new CopyOnWriteArrayList<>();
 
         @Override
-        public void invalidate(String mapId, Map<String, String> sha1ByUrl) {
-            calls.add(Map.entry(mapId, Map.copyOf(sha1ByUrl)));
+        public void invalidate(String mapId, IncrementalPatch patch) {
+            calls.add(Map.entry(mapId, Map.copyOf(patch.sha1ByUrl())));
         }
     }
 }

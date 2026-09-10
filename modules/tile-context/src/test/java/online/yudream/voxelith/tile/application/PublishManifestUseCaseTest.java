@@ -68,6 +68,7 @@ class PublishManifestUseCaseTest {
         Path mapDir = publishRoot.resolve("demo");
         assertTrue(Files.isRegularFile(mapDir.resolve("manifest.json")));
         assertTrue(Files.isRegularFile(mapDir.resolve("atlas.png")));
+        assertTrue(Files.isRegularFile(mapDir.resolve("atlas-layout.json")));
         assertTrue(Files.isRegularFile(mapDir.resolve("tiles/hires/0/0.glb")));
         assertTrue(Files.isRegularFile(mapDir.resolve("tiles/hires/1/0.glb")));
         assertFalse(Files.exists(mapDir.resolve("manifest.json.tmp")), "临时文件应已原子改名");

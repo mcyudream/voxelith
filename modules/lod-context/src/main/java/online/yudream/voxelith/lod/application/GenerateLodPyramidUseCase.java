@@ -7,6 +7,7 @@ import online.yudream.voxelith.lod.domain.heightfield.HeightfieldLodMesher;
 import online.yudream.voxelith.lod.domain.heightfield.LodQuad;
 import online.yudream.voxelith.lod.domain.heightfield.LodSample;
 import online.yudream.voxelith.sharedkernel.color.ColorSpace;
+import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
 import online.yudream.voxelith.tile.application.TileOutcome;
@@ -44,6 +45,20 @@ public class GenerateLodPyramidUseCase {
         List<TileOutcome.TileSummary> summaries = new ArrayList<>();
 
         Heightfield field = Heightfield.fromSamples(samples, 2);
+        HeightfieldStore store = command.store();
+        if (store != null) {
+            Heightfield previous = store.load().orElse(null);
+            if (previous != null && !command.replaceRegions().isEmpty()) {
+                for (RegionPos region : command.replaceRegions()) {
+                    int[] bounds = Heightfield.regionColumnBounds(region.x(), region.z(), previous.footprint());
+                    previous = previous.clearColumns(bounds[0], bounds[1], bounds[2], bounds[3]);
+                }
+                field = previous.merge(field);
+            } else if (previous != null && samples.isEmpty()) {
+                field = previous;
+            }
+            store.save(field);
+        }
         int level = 1;
         while (field.width() > 0 && level <= LEVEL_CAP) {
             int minTx = field.minTileX(HeightfieldLodMesher.COLUMNS_PER_TILE);
@@ -52,6 +67,9 @@ public class GenerateLodPyramidUseCase {
             int maxTz = field.maxTileZ(HeightfieldLodMesher.COLUMNS_PER_TILE);
             for (int tx = minTx; tx <= maxTx; tx++) {
                 for (int tz = minTz; tz <= maxTz; tz++) {
+                    if (!overlapsReplaced(command.replaceRegions(), level, tx, tz)) {
+                        continue;
+                    }
                     List<LodQuad> quads = mesher.meshTile(field, tx, tz);
                     if (quads.isEmpty()) {
                         continue;
@@ -74,6 +92,28 @@ public class GenerateLodPyramidUseCase {
             level++;
         }
         return new LodOutcome(summaries, level);
+    }
+
+    /** 增量只重网格覆盖被替换 region 的瓦片（含 ±1 裙边邻居）；全量则全部生成。 */
+    private static boolean overlapsReplaced(List<RegionPos> regions, int level, int tx, int tz) {
+        if (regions.isEmpty()) {
+            return true;
+        }
+        int coverage = 32 << level;
+        int minX = (tx - 1) * coverage;
+        int maxX = (tx + 2) * coverage - 1;
+        int minZ = (tz - 1) * coverage;
+        int maxZ = (tz + 2) * coverage - 1;
+        for (RegionPos region : regions) {
+            int rMinX = region.x() << 9;
+            int rMaxX = rMinX + 511;
+            int rMinZ = region.z() << 9;
+            int rMaxZ = rMinZ + 511;
+            if (minX <= rMaxX && maxX >= rMinX && minZ <= rMaxZ && maxZ >= rMinZ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 朝上表面采样：质心 (x,z) + 顶点最高 y + 贴图均色 × 群系染色。 */

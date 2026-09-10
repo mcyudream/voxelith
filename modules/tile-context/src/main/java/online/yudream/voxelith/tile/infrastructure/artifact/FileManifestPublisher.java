@@ -34,6 +34,11 @@ public final class FileManifestPublisher implements ManifestPublisher {
             copyTree(tilesDir.resolve("tiles"), mapDir.resolve("tiles"));
             Files.copy(tilesDir.resolve("atlas.png"), mapDir.resolve("atlas.png"),
                     StandardCopyOption.REPLACE_EXISTING);
+            Path layoutSource = tilesDir.resolve(AtlasLayoutFiles.FILE_NAME);
+            if (Files.isRegularFile(layoutSource)) {
+                Files.copy(layoutSource, mapDir.resolve(AtlasLayoutFiles.FILE_NAME),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
 
             Path manifestFile = mapDir.resolve("manifest.json");
             Path tmp = mapDir.resolve("manifest.json.tmp");
