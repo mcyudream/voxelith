@@ -53,6 +53,22 @@ class HeightfieldLodMesherTest {
         assertThat(first.positions()[0]).isEqualTo(0f);    // x0
         assertThat(first.positions()[3]).isEqualTo(64f);   // x1
         assertThat(first.positions()[1]).isEqualTo(64f);   // y
+        assertThat(first.uvs()).containsExactly(0f, 1f / 32f, 1f, 1f / 32f, 1f, 0f, 0f, 0f);
+    }
+
+    @Test
+    void sameHeightDifferentColorsMergeIntoOneTopRun() {
+        List<LodSample> samples = new ArrayList<>();
+        for (int cx = 0; cx < 32; cx++) {
+            for (int cz = 0; cz < 1; cz++) {
+                samples.add(new LodSample(cx * 2 + 0.5f, 64, cz * 2 + 0.5f, cx < 16 ? RED : BLUE));
+            }
+        }
+        Heightfield field = Heightfield.fromSamples(samples, 2);
+        List<LodQuad> quads = mesher.meshTile(field, 0, 0);
+        List<LodQuad> tops = quads.stream().filter(q -> q.normal()[1] == 1f).toList();
+        assertThat(tops).hasSize(1);
+        assertThat(tops.getFirst().positions()[3]).isEqualTo(64f);
     }
 
     @Test

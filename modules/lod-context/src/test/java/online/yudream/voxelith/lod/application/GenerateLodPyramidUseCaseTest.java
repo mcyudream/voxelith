@@ -89,7 +89,12 @@ class GenerateLodPyramidUseCaseTest {
                 // 朝下面即使更高也不得被采样
                 quad(0, 200, 0, new float[]{0, -1, 0}, "minecraft:block/stone", -1),
                 // 群系染色：线性灰 0x37 × 纯红（sRGB→线性不变）→ 0x370000
-                quad(2, 70, 0, new float[]{0, 1, 0}, "minecraft:block/stone", 0xFF0000)
+                quad(2, 70, 0, new float[]{0, 1, 0}, "minecraft:block/stone", 0xFF0000),
+                // 细面（花）不得进高度场
+                new BakedQuadData(
+                        new float[]{0.4f, 72, 0.4f, 0.6f, 72, 0.4f, 0.6f, 72, 0.6f, 0.4f, 72, 0.6f},
+                        new float[8], new float[]{0, 1, 0}, "minecraft:block/stone", -1, false, "up",
+                        0xFF0000, new byte[4], new byte[4], new byte[4], false)
         ), Path.of("build/lod-test"), 0));
 
         assertThat(outcome.levels()).isEqualTo(1);
@@ -186,6 +191,22 @@ class GenerateLodPyramidUseCaseTest {
         assertThat(store.field.topY(farCx, 0)).isEqualTo(50f);
         assertThat(incremental.tiles()).isNotEmpty();
         assertThat(incremental.tiles().getFirst().pos().level()).isEqualTo(1);
+    }
+
+    @Test
+    void embedsAerialColormapWhenImageCodecPresent() {
+        RecordingEncoder encoder = new RecordingEncoder();
+        GenerateLodPyramidUseCase useCase = new GenerateLodPyramidUseCase(
+                graySampler(), exporter(encoder), (w, h, argb) -> new byte[]{(byte) 0x89, 'P'});
+
+        useCase.generate(new LodCommand(meshes(
+                quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)
+        ), Path.of("build/lod-test"), 0));
+
+        assertThat(encoder.atlases.getFirst()).isNotNull();
+        assertThat(encoder.geometries.getFirst().opaque().uvs()).isNotEmpty();
+        assertThat(topFaceColors(encoder.geometries.getFirst()))
+                .allSatisfy(c -> assertThat(c).containsExactly(255, 255, 255));
     }
 
     private static final class InMemoryHeightfieldStore

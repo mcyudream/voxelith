@@ -179,4 +179,16 @@ class GlbTileEncoderTest {
                 .getInt(20 + ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).getInt(12));
         assertTrue(binLength < plainBin, "量化后 BIN 应更小（单 quad JSON 扩展声明可能让整包略增）");
     }
+
+    @Test
+    void lodColormapUsesLinearClampSampler() {
+        byte[] glb = new GlbTileEncoder().encode(oneQuad(), fakePng(), EncodeOptions.lodColormap());
+        ByteBuffer head = ByteBuffer.wrap(glb).order(ByteOrder.LITTLE_ENDIAN);
+        int jsonLength = head.getInt(12);
+        String json = new String(glb, 20, jsonLength, StandardCharsets.UTF_8).trim();
+        assertTrue(json.contains("\"magFilter\":9729"), json);
+        assertTrue(json.contains("\"minFilter\":9729"), json);
+        assertTrue(json.contains("\"wrapS\":33071"), json);
+        assertTrue(json.contains("\"TEXCOORD_0\""), json);
+    }
 }

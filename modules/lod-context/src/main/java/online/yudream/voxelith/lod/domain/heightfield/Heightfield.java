@@ -1,7 +1,9 @@
 package online.yudream.voxelith.lod.domain.heightfield;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 某一 LOD 层级的全局柱状高度场：每柱覆盖 footprint×footprint 方块（footprint = 2^level），
@@ -34,7 +36,13 @@ public final class Heightfield {
         this.floorY = floorY;
     }
 
-    /** 由表面采样点构建指定 footprint 的高度场（取每柱最高采样，颜色随最高点）。 */
+    /**
+     * 柱顶以下多少高度内的表面参与颜色投票（花/树冠尖端不覆盖整柱颜色）。
+     * 高度仍取柱内最高有效表面。顶面视觉颜色由 {@code AerialRaster} 航拍 mip 承担。
+     */
+    private static final float COLOR_BAND = 1.5f;
+
+    /** 由表面采样点构建指定 footprint 的高度场（柱顶高度取最高，颜色取柱顶附近面积加权多数色）。 */
     public static Heightfield fromSamples(List<LodSample> samples, int footprint) {
         if (samples.isEmpty()) {
             return new Heightfield(footprint, 0, 0, 0, 0, new float[0], new int[0], 0);
@@ -54,22 +62,65 @@ public final class Heightfield {
         float[] topY = new float[width * depth];
         Arrays.fill(topY, Float.NaN);
         int[] rgb = new int[width * depth];
-        float floorY = Float.MAX_VALUE;
         for (LodSample sample : samples) {
             int cx = Math.floorDiv((int) Math.floor(sample.x()), footprint);
             int cz = Math.floorDiv((int) Math.floor(sample.z()), footprint);
             int index = (cz - minCz) * width + (cx - minCx);
             if (Float.isNaN(topY[index]) || sample.y() > topY[index]) {
                 topY[index] = sample.y();
-                rgb[index] = sample.rgb();
             }
         }
+        voteColumnColors(samples, footprint, minCx, minCz, width, topY, rgb);
+        float floorY = Float.MAX_VALUE;
         for (float y : topY) {
             if (!Float.isNaN(y)) {
                 floorY = Math.min(floorY, y);
             }
         }
         return new Heightfield(footprint, minCx, minCz, width, depth, topY, rgb, floorY);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void voteColumnColors(List<LodSample> samples, int footprint,
+                                         int minCx, int minCz, int width,
+                                         float[] topY, int[] rgb) {
+        int n = topY.length;
+        Map<Integer, float[]>[] buckets = new Map[n];
+        for (LodSample sample : samples) {
+            int cx = Math.floorDiv((int) Math.floor(sample.x()), footprint);
+            int cz = Math.floorDiv((int) Math.floor(sample.z()), footprint);
+            int index = (cz - minCz) * width + (cx - minCx);
+            float top = topY[index];
+            if (Float.isNaN(top) || sample.y() < top - COLOR_BAND) {
+                continue;
+            }
+            Map<Integer, float[]> bucket = buckets[index];
+            if (bucket == null) {
+                bucket = new HashMap<>(4);
+                buckets[index] = bucket;
+            }
+            float[] slot = bucket.get(sample.rgb());
+            if (slot == null) {
+                slot = new float[]{0f};
+                bucket.put(sample.rgb(), slot);
+            }
+            slot[0] += Math.max(sample.areaXz(), 0.01f);
+        }
+        for (int i = 0; i < n; i++) {
+            Map<Integer, float[]> bucket = buckets[i];
+            if (bucket == null) {
+                continue;
+            }
+            int winner = 0;
+            float best = -1f;
+            for (Map.Entry<Integer, float[]> e : bucket.entrySet()) {
+                if (e.getValue()[0] > best) {
+                    best = e.getValue()[0];
+                    winner = e.getKey();
+                }
+            }
+            rgb[i] = winner;
+        }
     }
 
     /** 二进制仓储还原（长度必须为 width*depth）。 */
@@ -180,7 +231,7 @@ public final class Heightfield {
         }
     }
 
-    /** 聚合出上一层（footprint ×2）：父柱 = 2×2 子柱中柱顶最高者，颜色随之传递。 */
+    /** 聚合出上一层（footprint ×2）：柱顶取 2×2 最高，颜色取面积（出现次数）多数色。 */
     public Heightfield aggregate() {
         int parentFootprint = footprint * 2;
         int pOriginX = Math.floorDiv(originX, 2);
@@ -191,24 +242,53 @@ public final class Heightfield {
         Arrays.fill(pTopY, Float.NaN);
         int[] pRgb = new int[pWidth * pDepth];
         float pFloorY = Float.MAX_VALUE;
+        int[] colors = new int[4];
+        int[] counts = new int[4];
         for (int pz = 0; pz < pDepth; pz++) {
             for (int px = 0; px < pWidth; px++) {
                 int baseCx = (pOriginX + px) * 2;
                 int baseCz = (pOriginZ + pz) * 2;
                 float best = Float.NaN;
-                int bestRgb = 0;
+                int nColors = 0;
+                for (int i = 0; i < 4; i++) {
+                    counts[i] = 0;
+                }
                 for (int dz = 0; dz < 2; dz++) {
                     for (int dx = 0; dx < 2; dx++) {
                         float childY = topY(baseCx + dx, baseCz + dz);
-                        if (!Float.isNaN(childY) && (Float.isNaN(best) || childY > best)) {
-                            best = childY;
-                            bestRgb = rgb(baseCx + dx, baseCz + dz);
+                        if (Float.isNaN(childY)) {
+                            continue;
                         }
+                        if (Float.isNaN(best) || childY > best) {
+                            best = childY;
+                        }
+                        int childRgb = rgb(baseCx + dx, baseCz + dz);
+                        boolean found = false;
+                        for (int i = 0; i < nColors; i++) {
+                            if (colors[i] == childRgb) {
+                                counts[i]++;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && nColors < 4) {
+                            colors[nColors] = childRgb;
+                            counts[nColors] = 1;
+                            nColors++;
+                        }
+                    }
+                }
+                int winner = 0;
+                int bestCount = -1;
+                for (int i = 0; i < nColors; i++) {
+                    if (counts[i] > bestCount) {
+                        bestCount = counts[i];
+                        winner = colors[i];
                     }
                 }
                 int index = pz * pWidth + px;
                 pTopY[index] = best;
-                pRgb[index] = bestRgb;
+                pRgb[index] = winner;
                 if (!Float.isNaN(best)) {
                     pFloorY = Math.min(pFloorY, best);
                 }

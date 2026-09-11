@@ -21,6 +21,15 @@ class HeightfieldTest {
     }
 
     @Test
+    void tinyTopsDoNotStealColumnColorWhenLargerSurfaceIsNearby() {
+        Heightfield field = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 64, 0.5f, 0x00FF00, 1f),
+                new LodSample(0.6f, 65.2f, 0.5f, 0xFF0000, 0.04f)), 2);
+        assertThat(field.topY(0, 0)).isEqualTo(65.2f);
+        assertThat(field.rgb(0, 0)).isEqualTo(0x00FF00);
+    }
+
+    @Test
     void negativeCoordinatesAlignByFloorDiv() {
         Heightfield field = Heightfield.fromSamples(List.of(
                 new LodSample(-0.5f, 64, -0.5f, 1),
@@ -34,17 +43,16 @@ class HeightfieldTest {
     }
 
     @Test
-    void aggregateTakesHighestChildAndItsColor() {
+    void aggregateTakesHighestChildAndMajorityColor() {
         Heightfield child = Heightfield.fromSamples(List.of(
                 new LodSample(0.5f, 60, 0.5f, 0x111111),
                 new LodSample(2.5f, 66, 0.5f, 0x222222),
-                new LodSample(0.5f, 64, 2.5f, 0x333333)), 2);
+                new LodSample(0.5f, 64, 2.5f, 0x111111)), 2);
         Heightfield parent = child.aggregate();
 
         assertThat(parent.footprint()).isEqualTo(4);
-        // 父柱 (0,0) 覆盖世界 [0,4)²，最高子柱 66
         assertThat(parent.topY(0, 0)).isEqualTo(66f);
-        assertThat(parent.rgb(0, 0)).isEqualTo(0x222222);
+        assertThat(parent.rgb(0, 0)).isEqualTo(0x111111);
         assertThat(parent.floorY()).isEqualTo(66f);
     }
 

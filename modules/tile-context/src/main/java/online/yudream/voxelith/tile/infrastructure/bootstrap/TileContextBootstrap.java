@@ -35,7 +35,7 @@ public final class TileContextBootstrap {
         return new PublishManifestUseCase(new FileManifestPublisher());
     }
 
-    /** 贴图平均色采样（LOD 柱状几何取色用）。 */
+    /** 贴图平均色 / UV 区域采样（LOD 柱状几何与航拍色图取色用）。 */
     public static TextureColorSampler openTextureColorSampler(ResolvedResourceCatalog catalog) {
         return new TextureColorSampler(new CatalogTexturePixelSource(catalog));
     }
@@ -43,6 +43,11 @@ public final class TileContextBootstrap {
     /** 无纹理纯色瓦片导出（LOD 瓦片编码落盘用）。 */
     public static VertexColorTileExporter openVertexColorTileExporter() {
         return new VertexColorTileExporter(new GlbTileEncoder(), new FileTileArtifactSink());
+    }
+
+    /** PNG 编码器（LOD 航拍色图嵌入 glb）。 */
+    public static PngImageCodec openImageCodec() {
+        return new PngImageCodec();
     }
 
     /** 已发布图集读写（增量重跑复用 UV）。 */

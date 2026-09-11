@@ -75,7 +75,8 @@ public class IncrementalRenderConfig {
         GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(incrementalCatalog);
         GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                 TileContextBootstrap.openTextureColorSampler(incrementalCatalog),
-                TileContextBootstrap.openVertexColorTileExporter());
+                TileContextBootstrap.openVertexColorTileExporter(),
+                TileContextBootstrap.openImageCodec());
         Path mapDir = Path.of(publishDir).resolve(mapId);
         return new RegionIncrementalRenderAdapter(
                 incrementalWorld, bake, tiles, lod, publishedAtlas,

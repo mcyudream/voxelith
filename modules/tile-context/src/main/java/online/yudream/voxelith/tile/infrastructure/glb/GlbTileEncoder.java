@@ -42,6 +42,7 @@ public final class GlbTileEncoder implements TileEncoder {
     private static final int TARGET_ARRAY_BUFFER = 34962;
     private static final int TARGET_ELEMENT_ARRAY_BUFFER = 34963;
     private static final int FILTER_NEAREST = 9728;
+    private static final int FILTER_LINEAR = 9729;
 
     /** 水面不透明度（BLEND baseColorFactor alpha）。 */
     private static final float WATER_ALPHA = 0.8f;
@@ -56,9 +57,10 @@ public final class GlbTileEncoder implements TileEncoder {
     @Override
     public byte[] encode(TileGeometry geometry, byte[] atlasPng, EncodeOptions options) {
         boolean quantize = options != null && options.quantize();
+        boolean linearFilter = options != null && options.linearFilter();
         float posScale = quantize ? positionMaxAbs(geometry) : 1f;
         byte[] bin = buildBin(geometry, atlasPng, quantize, posScale);
-        byte[] json = gson.toJson(buildJson(geometry, atlasPng, quantize, posScale))
+        byte[] json = gson.toJson(buildJson(geometry, atlasPng, quantize, posScale, linearFilter))
                 .getBytes(StandardCharsets.UTF_8);
 
         int jsonPadded = pad4(json.length);
@@ -111,7 +113,8 @@ public final class GlbTileEncoder implements TileEncoder {
         bin.writeBytes(indices.array());
     }
 
-    private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale) {
+    private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale,
+                                 boolean linearFilter) {
         boolean textured = atlasPng != null;
         int pngBytes = textured ? atlasPng.length : 0;
         JsonObject root = new JsonObject();
@@ -147,8 +150,13 @@ public final class GlbTileEncoder implements TileEncoder {
             root.add("images", images);
 
             JsonObject sampler = new JsonObject();
-            sampler.addProperty("magFilter", FILTER_NEAREST);
-            sampler.addProperty("minFilter", FILTER_NEAREST);
+            int filter = linearFilter ? FILTER_LINEAR : FILTER_NEAREST;
+            sampler.addProperty("magFilter", filter);
+            sampler.addProperty("minFilter", filter);
+            if (linearFilter) {
+                sampler.addProperty("wrapS", 33071);
+                sampler.addProperty("wrapT", 33071);
+            }
             JsonArray samplers = new JsonArray();
             samplers.add(sampler);
             root.add("samplers", samplers);
