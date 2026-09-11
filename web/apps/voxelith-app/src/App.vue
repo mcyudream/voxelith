@@ -3,6 +3,7 @@ import {
   AdaptiveDistance,
   detectDeviceProfile,
   FirstPersonControls,
+  FloatingOrigin,
   FreeFlightControls,
   initialViewDistanceChunks,
   LightingUniforms,
@@ -84,6 +85,8 @@ let engine: MapEngine | null = null;
 let controls: CameraControls | null = null;
 let tileManager: TileManager | null = null;
 let adaptive: AdaptiveDistance | null = null;
+/** 浮点原点：常规坐标（±2^24 内）下不触发；边疆量级自动重定基防 float32 精度撕裂 */
+const floatingOrigin = new FloatingOrigin();
 let posTimer = 0;
 
 const modeHint = computed(() => MODE_HINTS[mode.value]);
@@ -129,6 +132,8 @@ async function openMap(mapId: string): Promise<void> {
   failedTiles.value = 0;
   tileManager?.dispose();
   tileManager = null;
+  // 场景与相机随即按世界坐标重建，渲染原点归零
+  floatingOrigin.reset();
   try {
     const m = await loadManifest(`/maps/${mapId}`);
     manifest.value = m;
@@ -279,14 +284,24 @@ onMounted(async () => {
   };
   controls = createControls("flight");
   engine.addFrameHook((dt) => controls?.update(dt));
+  engine.addFrameHook(() => {
+    // 先重定基再调度瓦片：相机/场景平移后，目标点与瓦片逻辑同步对齐到世界坐标
+    const delta = engine && floatingOrigin.maybeRebase(engine.camera, engine.scene);
+    if (delta) {
+      const targetHolder = controls as { target?: THREE.Vector3 } | null;
+      targetHolder?.target?.sub(delta);
+      tileManager?.setWorldOffset(floatingOrigin.origin);
+    }
+  });
   engine.addFrameHook(() => tileManager?.update(engine!.camera));
   engine.addFrameHook((dt) => adaptive?.update(dt));
   posTimer = window.setInterval(() => {
     if (!engine) return;
     const p = engine.camera.position;
-    cameraPos.x = Math.round(p.x);
-    cameraPos.y = Math.round(p.y);
-    cameraPos.z = Math.round(p.z);
+    // HUD 显示世界坐标（渲染坐标 + 浮点原点；常规地图原点为 0）
+    cameraPos.x = Math.round(p.x + floatingOrigin.origin.x);
+    cameraPos.y = Math.round(p.y + floatingOrigin.origin.y);
+    cameraPos.z = Math.round(p.z + floatingOrigin.origin.z);
   }, 150);
 
   // 地图列表：?map= 优先，其次 swust，最后列表第一张

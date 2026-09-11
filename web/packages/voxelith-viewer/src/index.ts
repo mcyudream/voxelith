@@ -21,7 +21,15 @@ export {
   type DeviceTier,
 } from "./engine/deviceTier.js";
 export { TileManager, type TileManagerOptions } from "./tiles/TileManager.js";
-export { GlbTileLoader, LightingUniforms } from "./tiles/GlbTileLoader.js";
+export {
+  disposeTileGroup,
+  GlbTileLoader,
+  LightingUniforms,
+  TileGeometryError,
+  validateTileGroup,
+  type GlbTileLoaderOptions,
+} from "./tiles/GlbTileLoader.js";
+export { FloatingOrigin } from "./engine/FloatingOrigin.js";
 export { FreeFlightControls, type FreeFlightOptions } from "./controls/FreeFlightControls.js";
 export { FirstPersonControls, type FirstPersonOptions } from "./controls/FirstPersonControls.js";
 export { TiltOrbitControls, type TiltOrbitOptions } from "./controls/TiltOrbitControls.js";

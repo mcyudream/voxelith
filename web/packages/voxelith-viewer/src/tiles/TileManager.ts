@@ -1,15 +1,13 @@
-/**
- * 瓦片管理：LOD 四叉树遍历 + 加载调度（并发上限 + 优先级）+ 数量/字节双阈值 LRU 淘汰。
- *
- * 每帧从清单最粗层级向下遍历：距相机足够近且存在子瓦片时细分为 4 个子瓦片，
- * 否则该瓦片即期望渲染集合的一员。期望瓦片未加载时以其最近已加载祖先垫底
- * （无洞、无全有全无），同时入队期望瓦片与缺失祖先；排序分按 1/2^level 加权，
- * 粗层背景永远优先于细层加载。LOD 瓦片材质带 polygonOffset（层级越深偏移越大），
- * 细层就位后与祖先背景重叠区域由细层赢得深度。lodCount=1 的清单退化为全量 hires 加载。
- */
+  /**
+   * 瓦片管理：LOD 四叉树遍历 + 加载调度（并发上限 + 优先级）+ 数量/字节双阈值 LRU 淘汰。
+   *
+   * 每帧从清单最粗层级向下遍历：距相机足够近（或俯视屏幕误差过大）且存在子瓦片时细分。
+   * 期望瓦片未加载时以已加载祖先垫底，中间缺失层不入队（避免俯视被 L1 踏脚石占满带宽）。
+   * lodCount=1 的清单退化为全量 hires 加载。
+   */
 import * as THREE from "three";
 import { tileWorldOrigin, type MapManifest, type ManifestTile } from "@yudream/voxelith-core";
-import { GlbTileLoader } from "./GlbTileLoader.js";
+import { disposeTileGroup, GlbTileLoader } from "./GlbTileLoader.js";
 
 export interface TileManagerOptions {
   scene: THREE.Scene;
@@ -27,12 +25,16 @@ export interface TileManagerOptions {
    *  每翻一倍允许的最细层级粗一级（逐级 LOD），最粗层封顶；缺省不限 */
   detailDistanceChunks?: number;
   onTileLoaded?: (tile: ManifestTile, loaded: number, total: number) => void;
+  /** 加载器注入点（测试/自定义管线）；缺省用内置 GlbTileLoader（可带共享图集）。 */
+  loader?: Pick<GlbTileLoader, "load">;
 }
 
 interface LiveTile {
   group: THREE.Group;
   bytes: number;
   lastUsed: number;
+  /** 世界空间包围盒中心（淘汰打分用；与 group.position 的渲染空间区分） */
+  center: THREE.Vector3;
 }
 
 export class TileManager {
@@ -47,7 +49,8 @@ export class TileManager {
   /** 细节视距（方块）；Infinity = 视距内外无差别。由 AdaptiveDistance 每帧平滑写入 */
   private detailDistance = Infinity;
 
-  private readonly loader = new GlbTileLoader();
+  private readonly loader: Pick<GlbTileLoader, "load">;
+  private readonly sharedAtlas: THREE.Texture | null = null;
   private readonly live = new Map<string, LiveTile>();
   private readonly byKey = new Map<string, ManifestTile>();
   private readonly topLevelTiles: ManifestTile[] = [];
@@ -57,6 +60,16 @@ export class TileManager {
   private queue: ManifestTile[] = [];
   private frame = 0;
   private loadedBytes = 0;
+  /**
+   * 代际戳：dispose/换图时递增。in-flight 的异步加载完成后比对代际，
+   * 过期结果（旧地图的迟到瓦片）直接销毁，绝不进新场景 —— 防快速切图竞态。
+   */
+  private generation = 0;
+  /**
+   * 世界→渲染空间偏移（浮点原点）。默认零向量 = 渲染空间即世界空间；
+   * 由 FloatingOrigin 在超远坐标（边疆量级）重定基时写入。
+   */
+  private readonly worldOffset = new THREE.Vector3();
   private viewPosition = new THREE.Vector3();
   private readonly frustum = new THREE.Frustum();
   private readonly frustumMatrix = new THREE.Matrix4();
@@ -67,15 +80,27 @@ export class TileManager {
     this.scene = options.scene;
     this.mapBaseUrl = options.mapBaseUrl;
     this.manifest = options.manifest;
-    this.maxConcurrent = options.maxConcurrent ?? 12;
+    this.maxConcurrent = options.maxConcurrent ?? 16;
     this.maxLoaded = options.maxLoaded ?? 4096;
     this.maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
-    this.lodFactor = options.lodFactor ?? 4;
+    this.lodFactor = options.lodFactor ?? 3;
     if (options.detailDistanceChunks !== undefined) {
       this.detailDistance = options.detailDistanceChunks * 16;
     }
     this.onTileLoaded = options.onTileLoaded;
     this.topLevel = options.manifest.settings.lodCount - 1;
+    // hires 共享图集：每个 hires glb 内嵌同一张图集 PNG，逐瓦片解码会把显存耗尽。
+    // 按 glTF 约定配置（flipY=false + SRGBColorSpace），过滤参数由 GlbTileLoader 统一设置。
+    // 无 DOM 环境（vitest/node）无法解码图片，跳过共享图集回退逐瓦片内嵌。
+    if (!options.loader && options.manifest.atlas?.url && typeof document !== "undefined") {
+      this.sharedAtlas = new THREE.TextureLoader().load(
+        `${this.mapBaseUrl}/${options.manifest.atlas.url}`,
+      );
+      this.sharedAtlas.flipY = false;
+      this.sharedAtlas.colorSpace = THREE.SRGBColorSpace;
+    }
+    this.loader =
+      options.loader ?? new GlbTileLoader({ sharedAtlas: this.sharedAtlas ?? undefined });
     for (const tile of options.manifest.tiles) {
       this.byKey.set(this.key(tile), tile);
       if (tile.level === this.topLevel) {
@@ -91,7 +116,8 @@ export class TileManager {
   /** 每帧调用：LOD 遍历决定渲染集合（祖先垫底）并调度缺失瓦片。 */
   update(camera: THREE.Camera): void {
     this.frame++;
-    this.viewPosition.copy(camera.position);
+    // 逻辑坐标一律世界空间：相机在渲染空间，加浮点原点偏移还原
+    this.viewPosition.copy(camera.position).add(this.worldOffset);
     camera.updateMatrixWorld();
     this.frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.frustumMatrix);
@@ -105,7 +131,9 @@ export class TileManager {
         continue;
       }
       candidates.set(key, tile);
-      // 未加载：最近已加载祖先垫底；路上第一个缺失祖先入队（粗层先到位）
+      // 未加载：已加载祖先垫底；若整条祖先链都还没到，只入队最粗缺失祖先一次，
+      // 不要把 L1..L(n-1) 全塞进队列（俯视会被踏脚石占满带宽）。
+      let queuedAncestor = false;
       for (let level = tile.level + 1; level <= this.topLevel; level++) {
         const shift = level - tile.level;
         const ancestor = this.byKey.get(`${level}:${tile.x >> shift}:${tile.z >> shift}`);
@@ -116,7 +144,10 @@ export class TileManager {
         if (this.markLive(renderKeys, ancestorKey)) {
           break;
         }
-        candidates.set(ancestorKey, ancestor);
+        if (!queuedAncestor && level === this.topLevel) {
+          candidates.set(ancestorKey, ancestor);
+          queuedAncestor = true;
+        }
       }
     }
 
@@ -161,6 +192,11 @@ export class TileManager {
     this.detailDistance = blocks;
   }
 
+  /** 写入浮点原点偏移（世界→渲染空间）；新加载瓦片与视距逻辑随之对齐。 */
+  setWorldOffset(offset: THREE.Vector3): void {
+    this.worldOffset.copy(offset);
+  }
+
   get detailDistanceBlocks(): number {
     return this.detailDistance;
   }
@@ -176,20 +212,33 @@ export class TileManager {
 
   private shouldRefine(tile: ManifestTile): boolean {
     const size = this.manifest.settings.hiresTileSize * 2 ** tile.level;
-    if (this.boxDistance(tile) >= size * this.lodFactor) {
+    const geometric = this.boxDistance(tile) < size * this.lodFactor;
+    const sse = this.screenErrorExceeds(tile, size);
+    if (!geometric && !sse) {
       return false;
     }
     const dxz = this.horizontalBoxDistance(tile);
     if (dxz < this.detailDistance) {
-      // 视距内：标准渲染，按常规规则细分到 hires
       return true;
     }
-    // 视距外：不剔除，逐级使用 LOD——水平距离每翻一倍，允许的最细层级粗一级，最粗层封顶
     const allowedFinest = Math.min(
       this.topLevel,
       1 + Math.floor(Math.log2(dxz / this.detailDistance)),
     );
     return tile.level > allowedFinest;
+  }
+
+  /**
+   * 屏幕空间误差：俯视高空时几何距离会远大于瓦片边长，lodFactor 门限会把整图钉在最粗层。
+   * 用「瓦片边长 / 相机高度」近似像素跨度，跨度过阈值则继续细分。
+   */
+  private screenErrorExceeds(tile: ManifestTile, size: number): boolean {
+    const midY = (tile.min[1] + tile.max[1]) / 2;
+    const height = Math.max(8, this.viewPosition.y - midY);
+    if (this.horizontalBoxDistance(tile) > height * 4) {
+      return false;
+    }
+    return size / height > 0.18;
   }
 
   /** 4 个子瓦片中存在于清单的压入栈；返回是否存在任何子瓦片。 */
@@ -230,7 +279,7 @@ export class TileManager {
     return true;
   }
 
-  /** 加载优先级：视锥内 ×0.1（视野内优先），层级越深分越高（粗层背景先加载）。 */
+  /** 加载优先级：视锥内优先；同屏先铺最粗背景，再填期望层。 */
   private sortQueue(): void {
     const inView = (t: ManifestTile) => {
       this.tileBox.min.set(t.min[0], t.min[1], t.min[2]);
@@ -243,17 +292,30 @@ export class TileManager {
       const dz = (t.min[2] + t.max[2]) / 2 - this.viewPosition.z;
       return dx * dx + dy * dy + dz * dz;
     };
-    const score = (t: ManifestTile) =>
-      (distSq(t) * (inView(t) ? 0.1 : 1)) / 2 ** t.level;
+    const score = (t: ManifestTile) => {
+      const viewBias = inView(t) ? 0.08 : 1;
+      // 最粗层先到（铺底），同层按距离。中间踏脚石已不再入队。
+      return distSq(t) * viewBias / 2 ** t.level;
+    };
     this.queue.sort((a, b) => score(a) - score(b));
   }
 
   private async loadTile(tile: ManifestTile, key: string): Promise<void> {
+    const generation = this.generation;
     try {
       // 版本戳防 HTTP 强缓存拿到旧版瓦片（瓦片同 URL 覆盖发布）
       const group = await this.loader.load(`${this.mapBaseUrl}/${tile.url}?v=${this.manifest.version}`);
+      if (generation !== this.generation || this.live.has(key)) {
+        // 迟到/重复结果：所属管理器已换图或该瓦片已被另一路径加载，直接销毁防泄漏
+        disposeTileGroup(group);
+        return;
+      }
       const [ox, oy, oz] = tileWorldOrigin(this.manifest, tile);
-      group.position.set(ox, oy, oz);
+      group.position.set(
+        ox - this.worldOffset.x,
+        oy - this.worldOffset.y,
+        oz - this.worldOffset.z,
+      );
       group.matrixAutoUpdate = false;
       group.updateMatrix();
       if (tile.level > 0) {
@@ -268,7 +330,16 @@ export class TileManager {
         });
       }
       this.scene.add(group);
-      this.live.set(key, { group, bytes: tile.bytes, lastUsed: this.frame });
+      this.live.set(key, {
+        group,
+        bytes: tile.bytes,
+        lastUsed: this.frame,
+        center: new THREE.Vector3(
+          (tile.min[0] + tile.max[0]) / 2,
+          (tile.min[1] + tile.max[1]) / 2,
+          (tile.min[2] + tile.max[2]) / 2,
+        ),
+      });
       this.loadedBytes += tile.bytes;
       this.evictIfNeeded();
       this.onTileLoaded?.(tile, this.live.size, this.manifest.tiles.length);
@@ -286,7 +357,7 @@ export class TileManager {
       let victimKey: string | null = null;
       let victimScore = -Infinity;
       for (const [key, tile] of this.live) {
-        const distance = tile.group.position.distanceTo(this.viewPosition);
+        const distance = tile.center.distanceTo(this.viewPosition);
         const score = distance + (this.frame - tile.lastUsed) * 1000;
         if (score > victimScore) {
           victimScore = score;
@@ -298,7 +369,7 @@ export class TileManager {
       }
       const victim = this.live.get(victimKey)!;
       this.scene.remove(victim.group);
-      disposeGroup(victim.group);
+      disposeTileGroup(victim.group);
       this.loadedBytes -= victim.bytes;
       this.live.delete(victimKey);
     }
@@ -313,22 +384,15 @@ export class TileManager {
   }
 
   dispose(): void {
+    // 代际递增：此后所有 in-flight 加载完成即销毁，不再进场景
+    this.generation++;
     for (const tile of this.live.values()) {
       this.scene.remove(tile.group);
-      disposeGroup(tile.group);
+      disposeTileGroup(tile.group);
     }
     this.live.clear();
     this.queue = [];
     this.loadedBytes = 0;
+    this.sharedAtlas?.dispose();
   }
-}
-
-function disposeGroup(group: THREE.Group): void {
-  group.traverse((node) => {
-    if (node instanceof THREE.Mesh) {
-      node.geometry.dispose();
-      const material = node.material as THREE.Material;
-      material.dispose();
-    }
-  });
 }

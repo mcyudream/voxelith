@@ -65,6 +65,7 @@ describe("TileManager 细节视距（视距外逐级 LOD）", () => {
       scene: new THREE.Scene(),
       mapBaseUrl: "http://localhost/maps/test",
       manifest: makeManifest(),
+      lodFactor: 4,
     });
     const keys = desiredKeys(tm, 16, 10, 16);
     // 相机所在角落细分到 L0
@@ -81,6 +82,7 @@ describe("TileManager 细节视距（视距外逐级 LOD）", () => {
       scene: new THREE.Scene(),
       mapBaseUrl: "http://localhost/maps/test",
       manifest: makeManifest(),
+      lodFactor: 4,
       detailDistanceChunks: 3, // 48 方块
     });
     const keys = desiredKeys(tm, 16, 10, 16);
@@ -99,6 +101,7 @@ describe("TileManager 细节视距（视距外逐级 LOD）", () => {
       scene: new THREE.Scene(),
       mapBaseUrl: "http://localhost/maps/test",
       manifest: makeManifest(),
+      lodFactor: 4,
       detailDistanceChunks: 3,
     });
     tm.setDetailDistanceBlocks(Infinity);
@@ -112,14 +115,124 @@ describe("TileManager 细节视距（视距外逐级 LOD）", () => {
       scene: new THREE.Scene(),
       mapBaseUrl: "http://localhost/maps/test",
       manifest: makeManifest(),
+      lodFactor: 4,
       detailDistanceChunks: 3,
     });
-    // 相机在 (16,10,16) 正上方 200m：3D 距离 ~136 仍在细化门限内，
-    // 若细节视距按 3D 距离算，正下方 L1(0,0) 会被判到第二环而停在 L1；
-    // 按水平距离算则 dxz=0 < 48，正常细分到 hires
+    // 相机在 (16,10,16) 正上方 200m：水平距离 0 < 48，应细分到 hires
     const keys = desiredKeys(tm, 16, 200, 16);
     expect(keys).toContain("0:0:0");
     expect(keys).toContain("1:1:0");
     expect(keys).not.toContain("0:2:0");
+  });
+
+  it("高空俯视：屏幕误差门限让正下方继续细分，而不是钉在最粗层", () => {
+    const tm = new TileManager({
+      scene: new THREE.Scene(),
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      lodFactor: 1,
+    });
+    // lodFactor=1 时纯几何门限会把 200m 高空的 L2(128m) 判为不细分；
+    // SSE 应按相机高度继续向下。
+    const keys = desiredKeys(tm, 16, 200, 16);
+    expect(keys).toContain("0:0:0");
+    expect(keys).not.toContain("2:0:0");
+  });
+});
+
+/** 构造可追踪释放的瓦片组。 */
+function makeTrackableGroup(): { group: THREE.Group; disposed: { value: boolean } } {
+  const disposed = { value: false };
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]), 3),
+  );
+  geometry.dispose = () => {
+    disposed.value = true;
+  };
+  const group = new THREE.Group();
+  group.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial()));
+  return { group, disposed };
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("TileManager 代际防竞态与浮点原点", () => {
+  it("dispose 后迟到的加载结果直接销毁，不进场景", async () => {
+    const scene = new THREE.Scene();
+    const pending: Array<{
+      resolve: () => void;
+      disposed: { value: boolean };
+    }> = [];
+    const loader = {
+      load: (_url: string) => {
+        const { group, disposed } = makeTrackableGroup();
+        return new Promise<THREE.Group>((resolve) => {
+          pending.push({ resolve: () => resolve(group), disposed });
+        });
+      },
+    };
+    const tm = new TileManager({
+      scene,
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+    tm.update(camera);
+    expect(pending.length).toBeGreaterThan(0);
+
+    // 玩家切图：旧管理器销毁
+    tm.dispose();
+    // 在途请求此刻才返回（过期数据）
+    for (const p of pending) {
+      p.resolve();
+    }
+    await flushMicrotasks();
+
+    expect(tm.loadedCount).toBe(0);
+    expect(scene.children.length).toBe(0);
+    // 每个迟到组的 geometry 都被 dispose（不泄漏 GPU 资源）
+    for (const p of pending) {
+      expect(p.disposed.value).toBe(true);
+    }
+  });
+
+  it("setWorldOffset 后新瓦片按渲染空间定位（世界原点 − 偏移）", async () => {
+    const scene = new THREE.Scene();
+    const byUrl = new Map<string, THREE.Group>();
+    const loader = {
+      load: (url: string) => {
+        const { group } = makeTrackableGroup();
+        byUrl.set(url, group);
+        return Promise.resolve(group);
+      },
+    };
+    const tm = new TileManager({
+      scene,
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+    });
+    tm.setWorldOffset(new THREE.Vector3(1024, 0, -2048));
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16 - 1024, 10, 16 + 2048); // 渲染空间相机：世界 (16,10,16)
+    tm.update(camera);
+    await flushMicrotasks();
+
+    // L2(1,0) 世界原点 (128,0,0) → 渲染空间 (128-1024, 0, 0-(-2048))
+    const entry = [...byUrl.entries()].find(([url]) => url.includes("tiles/l2/1/0.glb"));
+    expect(entry).toBeDefined();
+    const group = entry![1];
+    expect(group.position.x).toBe(128 - 1024);
+    expect(group.position.z).toBe(0 + 2048);
+    // matrixAutoUpdate=false 时矩阵已同步
+    expect(group.matrix.elements[12]).toBe(group.position.x);
+    expect(scene.children).toContain(group);
+    tm.dispose();
   });
 });
