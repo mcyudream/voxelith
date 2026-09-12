@@ -11,20 +11,33 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 从资源目录读贴图字节并用 ImageIO 解码；动画贴图（竖条）裁第一帧（宽×宽）。
+ *
+ * <p>解码结果按贴图 id 缓存：LOD 采样对每个朝上面调用 {@code sampleUvAverageRgb}，
+ * 全图数千万次调用若逐次走 jar 查找 + PNG 解码（含 ImageIO SPI 探测与文件缓存写盘）
+ * 会让 LOD 链路假死数小时；缓存后仅首次解码，后续为纯内存查表。</p>
  */
 public final class CatalogTexturePixelSource implements TexturePixelSource {
 
     private final ResolvedResourceCatalog catalog;
+    private final ConcurrentMap<Identifier, Optional<AtlasTexture>> cache = new ConcurrentHashMap<>();
 
     public CatalogTexturePixelSource(ResolvedResourceCatalog catalog) {
         this.catalog = catalog;
+        // 解码源是内存中的字节数组，无需 ImageIO 落盘文件缓存（默认 useCache=true 会写临时文件）
+        ImageIO.setUseCache(false);
     }
 
     @Override
     public Optional<AtlasTexture> load(Identifier textureId) {
+        return cache.computeIfAbsent(textureId, this::decodeFromCatalog);
+    }
+
+    private Optional<AtlasTexture> decodeFromCatalog(Identifier textureId) {
         return catalog.texture(textureId).map(bytes -> decode(textureId, bytes));
     }
 
