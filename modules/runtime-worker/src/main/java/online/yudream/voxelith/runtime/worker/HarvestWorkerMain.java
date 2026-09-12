@@ -94,16 +94,19 @@ public final class HarvestWorkerMain {
             ClassLoader gameClassLoader = FabricKnotBootstrap.start(gameJar, workDir, modJars);
             checks.put("fabric.knot.init", true);
 
-            int blocks = MinecraftBlockSmoke.countRegisteredBlocks(gameClassLoader);
+            HarvestAdapter adapter = HarvestAdapters.resolve(gameClassLoader);
+            extras.addProperty("adapter", adapter.id());
+
+            int blocks = adapter.bootstrapRegistries(gameClassLoader);
             checks.put("fabric.blocks.registered", blocks >= MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS);
             if (blocks < MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS) {
                 failures.add("原版方块注册数异常: " + blocks + " < " + MinecraftBlockSmoke.MIN_EXPECTED_BLOCKS);
             }
 
             Path modelsOut = workDir.resolve("models.json.gz");
-            ModelHarvest.HarvestCounts counts = ModelHarvest.harvest(gameClassLoader, gameJar, modelsOut);
+            ModelHarvest.HarvestCounts counts = adapter.harvest(gameClassLoader, gameJar, modJars, modelsOut);
             // 空气类与纯 BER 方块（箱/告示牌/旗帜/头颅/床等约 140 个）烘焙后无 quad，
-            // 以状态数/quad 数为准而非方块数
+            // 以状态数/quad 数为准而非方块数。含 mod 时状态数会更高，下限仍按原版。
             checks.put("fabric.models.baked", counts.states() > 20_000 && counts.quads() > 100_000);
             if (counts.states() <= 20_000) {
                 failures.add("导出状态数异常: " + counts.states());
@@ -111,6 +114,8 @@ public final class HarvestWorkerMain {
             extras.addProperty("modelsFile", modelsOut.getFileName().toString());
             extras.addProperty("statesExported", counts.states());
             extras.addProperty("quadsExported", counts.quads());
+            extras.addProperty("blocksExported", counts.blocks());
+            extras.addProperty("modJars", modJars.size());
             return blocks;
         } catch (Throwable t) {
             checks.putIfAbsent("fabric.knot.init", false);

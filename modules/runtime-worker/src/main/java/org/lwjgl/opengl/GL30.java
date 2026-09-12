@@ -31,4 +31,7 @@ public class GL30 extends GL11 {
 
     public static void glDeleteFramebuffers(int framebuffer) {
     }
+
+    public static void glGenerateMipmap(int target) {
+    }
 }

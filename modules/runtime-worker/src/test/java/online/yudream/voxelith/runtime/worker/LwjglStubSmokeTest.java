@@ -29,4 +29,19 @@ class LwjglStubSmokeTest {
         assertThat(vao).isPositive();
         org.lwjgl.opengl.GL.destroyCapabilities();
     }
+
+    @Test
+    void glStubReportsTextureSizeAndRecordsLastUpload() {
+        assertThat(org.lwjgl.opengl.GL11.glGetInteger(org.lwjgl.opengl.GL11.GL_MAX_TEXTURE_SIZE))
+                .isEqualTo(8192);
+        org.lwjgl.opengl.GL11.glTexImage2D(
+                org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0, org.lwjgl.opengl.GL11.GL_RGBA,
+                1024, 512, 0, org.lwjgl.opengl.GL11.GL_RGBA, org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE, 0L);
+        assertThat(org.lwjgl.opengl.GL11.glGetTexLevelParameteri(
+                org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0, org.lwjgl.opengl.GL11.GL_TEXTURE_WIDTH))
+                .isEqualTo(1024);
+        assertThat(org.lwjgl.opengl.GL11.glGetTexLevelParameteri(
+                org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0, org.lwjgl.opengl.GL11.GL_TEXTURE_HEIGHT))
+                .isEqualTo(512);
+    }
 }

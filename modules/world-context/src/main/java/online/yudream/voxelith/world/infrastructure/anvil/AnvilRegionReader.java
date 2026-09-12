@@ -68,8 +68,16 @@ public final class AnvilRegionReader implements AutoCloseable {
             if (offset == 0 || sectors == 0) {
                 return Optional.empty();
             }
-            file.seek(offset * 4096L);
+            long start = offset * 4096L;
+            // 损坏/截断的 .mca：头表仍指向载荷，读盘失败时当空气洞，不中断全量烘焙
+            if (start + 5L > file.length()) {
+                return Optional.empty();
+            }
+            file.seek(start);
             int length = file.readInt();
+            if (length < 1 || start + 4L + length > file.length()) {
+                return Optional.empty();
+            }
             int compression = file.readByte();
             byte[] payload = new byte[length - 1];
             file.readFully(payload);
@@ -81,8 +89,8 @@ public final class AnvilRegionReader implements AutoCloseable {
                         "不支持的区块压缩类型 " + compression + "（lz4 需额外依赖，暂未接入）");
             };
             return Optional.of(decompressed);
-        } catch (IOException e) {
-            throw new UncheckedIOException("读取区块载荷失败 (" + localX + "," + localZ + ")", e);
+        } catch (IOException | UncheckedIOException | IllegalStateException e) {
+            return Optional.empty();
         }
     }
 

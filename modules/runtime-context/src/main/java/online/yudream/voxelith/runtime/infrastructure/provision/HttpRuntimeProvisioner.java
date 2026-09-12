@@ -23,8 +23,12 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * 基于 java.net.http 的运行时 provision 实现。
@@ -70,8 +74,9 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
             Path fabricRoot = cacheDir.resolve("fabric");
             Path loaderJar = downloadFabricLoader(spec.loaderVersion(), fabricRoot, libraries);
             Path mappingsJar = downloadIntermediary(spec.mcVersion(), fabricRoot);
+            List<Path> extraMods = resolveMissingFabricMods(spec.modJars(), spec.mcVersion(), fabricRoot);
 
-            return new ProvisionedRuntime(gameJar, mappingsJar, loaderJar, libraries);
+            return new ProvisionedRuntime(gameJar, mappingsJar, loaderJar, libraries, extraMods, List.of());
         } catch (IOException e) {
             throw new IllegalStateException("运行时 provision 下载失败: " + e.getMessage(), e);
         } catch (InterruptedException e) {
@@ -233,6 +238,90 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
         Path target = fabricRoot.resolve(path);
         download(FABRIC_MAVEN + path, target, null);
         return target;
+    }
+
+    /**
+     * 扫描用户给定的 fabric.mod.json {@code depends}，对已知可 Maven 解析的 id
+     * （目前：fabric-api / fabric）自动补全对应 jar，避免每个模组手动列传递依赖。
+     * 未知 id 忽略——由用户在 RuntimeSpec.modJars 显式提供。
+     */
+    private List<Path> resolveMissingFabricMods(List<Path> userMods, String mcVersion, Path fabricRoot)
+            throws IOException, InterruptedException {
+        Set<String> present = new LinkedHashSet<>();
+        Set<String> wanted = new LinkedHashSet<>();
+        for (Path jar : userMods) {
+            JsonObject fabricMod = readFabricModJson(jar);
+            if (fabricMod == null) {
+                continue;
+            }
+            present.add(fabricMod.get("id").getAsString());
+            if (fabricMod.has("depends")) {
+                fabricMod.getAsJsonObject("depends").entrySet().forEach(e -> wanted.add(e.getKey()));
+            }
+        }
+        wanted.removeAll(present);
+        wanted.remove("fabricloader");
+        wanted.remove("minecraft");
+        wanted.remove("java");
+        wanted.remove("architectury");
+
+        List<Path> extra = new ArrayList<>();
+        if (wanted.contains("fabric-api") || wanted.contains("fabric")) {
+            extra.add(downloadFabricApi(mcVersion, fabricRoot));
+        }
+        return extra;
+    }
+
+    private Path downloadFabricApi(String mcVersion, Path fabricRoot)
+            throws IOException, InterruptedException {
+        String version = latestFabricApi(mcVersion, fabricRoot);
+        String path = "net/fabricmc/fabric-api/fabric-api/" + version
+                + "/fabric-api-" + version + ".jar";
+        Path target = fabricRoot.resolve(path);
+        download(FABRIC_MAVEN + path, target, null);
+        return target;
+    }
+
+    private String latestFabricApi(String mcVersion, Path fabricRoot) throws IOException, InterruptedException {
+        Path meta = fabricRoot.resolve("net/fabricmc/fabric-api/fabric-api/maven-metadata.xml");
+        download(FABRIC_MAVEN + "net/fabricmc/fabric-api/fabric-api/maven-metadata.xml", meta, null);
+        String xml = Files.readString(meta);
+        String suffix = "+" + mcVersion;
+        String latest = null;
+        int from = 0;
+        while (true) {
+            int start = xml.indexOf("<version>", from);
+            if (start < 0) {
+                break;
+            }
+            int end = xml.indexOf("</version>", start);
+            if (end < 0) {
+                break;
+            }
+            String version = xml.substring(start + "<version>".length(), end);
+            if (version.endsWith(suffix)) {
+                latest = version;
+            }
+            from = end + 1;
+        }
+        if (latest == null) {
+            throw new IllegalStateException("fabric-api Maven 元数据中找不到 MC " + mcVersion);
+        }
+        return latest;
+    }
+
+    private static JsonObject readFabricModJson(Path jar) {
+        try (ZipFile zip = new ZipFile(jar.toFile())) {
+            ZipEntry entry = zip.getEntry("fabric.mod.json");
+            if (entry == null) {
+                return null;
+            }
+            return JsonParser.parseString(
+                    new String(zip.getInputStream(entry).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** group:artifact:version[:classifier] → maven 仓库相对路径。 */

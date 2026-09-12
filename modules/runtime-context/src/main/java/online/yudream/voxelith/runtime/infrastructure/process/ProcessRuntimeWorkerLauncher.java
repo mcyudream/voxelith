@@ -94,11 +94,17 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
                 return HarvestReport.failed(List.of("worker 超时（" + timeout + "），已强制终止"), timeout.toMillis());
             }
             Path resultFile = spec.workDir().resolve(WorkerProtocol.RESULT_FILE);
-            if (process.exitValue() != 0 || !Files.isRegularFile(resultFile)) {
-                return HarvestReport.failed(List.of(
-                        "worker 退出码 " + process.exitValue() + " 且报告文件缺失，详见 worker.log"), 0);
+            if (Files.isRegularFile(resultFile)) {
+                HarvestReport report = readReport(resultFile);
+                if (process.exitValue() != 0 && report.ok()) {
+                    return HarvestReport.failed(List.of(
+                            "worker 退出码 " + process.exitValue() + "，详见 worker.log"),
+                            report.durationMillis());
+                }
+                return report;
             }
-            return readReport(resultFile);
+            return HarvestReport.failed(List.of(
+                    "worker 退出码 " + process.exitValue() + " 且报告文件缺失，详见 worker.log"), 0);
         } catch (IOException e) {
             throw new UncheckedIOException("启动 worker 子进程失败", e);
         } catch (InterruptedException e) {
@@ -114,6 +120,9 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
         json.addProperty("loaderVersion", spec.loaderVersion());
         var mods = new com.google.gson.JsonArray();
         spec.modJars().forEach(p -> mods.add(p.toAbsolutePath().toString()));
+        if (runtime != null) {
+            runtime.extraMods().forEach(p -> mods.add(p.toAbsolutePath().toString()));
+        }
         json.add("modJars", mods);
         if (runtime != null) {
             json.addProperty(WorkerProtocol.SPEC_GAME_JAR, runtime.gameJar().toAbsolutePath().toString());
@@ -161,6 +170,7 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
             appendClasspath(sb, runtime.loaderJar());
             appendClasspath(sb, runtime.mappingsJar());
             runtime.libraries().forEach(p -> appendClasspath(sb, p));
+            runtime.extraClasspath().forEach(p -> appendClasspath(sb, p));
         }
         return sb.toString();
     }

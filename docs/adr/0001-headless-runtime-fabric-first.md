@@ -42,3 +42,21 @@
    workDir 写 `model-acquisition.json` 标记来源（RUNTIME_HARVEST /
    STATIC_FALLBACK）与 runtime 失败明细。组合根在 apps/voxelith-server
    `RuntimeHarvestConfig`。
+
+## 补充（2026-09-12，版本×加载器 SPI）
+
+6. **采集适配器可插拔**：worker 内 `HarvestAdapter` 按游戏 ClassLoader 上的
+   intermediary 类/方法签名探测，内置 `FabricHarvestAdapter` 覆盖 1.20.1–1.20.4
+   （ZipResourcePack：三参 File 构造 / 1.20.4 公开 ZipFileFactory /
+   包可见 ZipFileWrapper）。有 fabric-model-loading-api 时，无头路径在 new
+   ModelLoader 前调用 preparePlugins 并写入 CURRENT_PLUGINS，避免 mixin 读到
+   null。不绑定单一 DataVersion，也不为某个模组写死逻辑。
+7. **额外加载器**：在 worker classpath 上放独立 jar，通过
+   `META-INF/services/online.yudream.voxelith.runtime.worker.HarvestAdapter`
+   注册即可（Forge 走这条路）。`ProvisionedRuntime.extraClasspath` 把适配器 jar
+   拼进子进程；`extraMods` 把自动补全的传递依赖（如 fabric-api）并入
+   `fabric.addMods`。
+8. **资源包叠加**：采集时 ResourceManager 按 vanilla client jar → 用户 mod jar
+   顺序打开 ZipResourcePack。Knot.init 之后、Bootstrap 完成时调用
+   {@code Hooks.startClient}（失败则只 invoke {@code main} 入口），模组方块才会
+   进入 Registries.BLOCK 并被 ModelLoader 烘焙。

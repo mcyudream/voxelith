@@ -62,4 +62,21 @@ class AnvilWorldReaderTest {
         assertThat(reader.readChunk(worldDir, new ChunkPos(9, 9))).isEmpty();
         assertThat(reader.readRegion(worldDir, new RegionPos(0, 0))).hasSize(1);
     }
+
+    @Test
+    void truncatedRegionPayloadIsEmptyNotError() throws Exception {
+        Path regionDir = worldDir.resolve("region");
+        java.nio.file.Files.createDirectories(regionDir);
+        Path mca = regionDir.resolve("r.0.0.mca");
+        byte[] bytes = new byte[8192];
+        // 头表指向 sector 3（offset=3, sectors=1），文件却只有 2 个扇区
+        bytes[2] = 3;
+        bytes[3] = 1;
+        java.nio.file.Files.write(mca, bytes);
+
+        try (AnvilRegionReader reader = new AnvilRegionReader(mca)) {
+            assertThat(reader.readChunkPayload(0, 0)).isEmpty();
+        }
+        assertThat(new AnvilWorldReader().readChunk(worldDir, new ChunkPos(0, 0))).isEmpty();
+    }
 }

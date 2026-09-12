@@ -83,4 +83,28 @@ class PublishManifestUseCaseTest {
                 .publish("demo", "演示地图", workDir, outcome, publishRoot);
         assertTrue(Files.isRegularFile(mapDir.resolve("manifest.json")));
     }
+
+    @Test
+    void inPlacePublishWritesManifestWithoutCopyingTiles() throws Exception {
+        Path mapDir = publishRoot.resolve("inplace");
+        Files.createDirectories(mapDir.resolve("tiles/hires/0"));
+        Files.write(mapDir.resolve("atlas.png"), new byte[]{1, 2, 3});
+        Files.write(mapDir.resolve("tiles/hires/0/0.glb"), new byte[]{4, 5});
+        Files.write(mapDir.resolve("heightfield.bin"), new byte[]{6});
+
+        MapManifest.TileEntry entry = new MapManifest.TileEntry(
+                0, 0, 0, "tiles/hires/0/0.glb", "abc", 2, 1,
+                new float[]{0, 0, 0}, new float[]{1, 1, 1});
+        MapManifest manifest = new MapManifest(1, "inplace", "就地", "0123456789ab", "now",
+                new MapManifest.Settings(32, 1),
+                new float[]{0, 0, 0}, new float[]{1, 1, 1},
+                new MapManifest.AtlasRef("atlas.png", 16, 1),
+                List.of(entry));
+
+        Path written = new FileManifestPublisher().publish("inplace", mapDir, manifest, publishRoot);
+        assertEquals(mapDir.resolve("manifest.json"), written);
+        assertTrue(Files.isRegularFile(mapDir.resolve("tiles/hires/0/0.glb")));
+        assertTrue(Files.isRegularFile(mapDir.resolve("heightfield.bin")));
+        assertTrue(Files.readString(written).contains("\"mapId\": \"inplace\""));
+    }
 }

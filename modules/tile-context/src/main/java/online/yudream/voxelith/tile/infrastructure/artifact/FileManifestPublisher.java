@@ -16,6 +16,7 @@ import java.util.stream.Stream;
 
 /**
  * 文件系统清单发布：瓦片产物复制到 {publishRoot}/{mapId}/，manifest.json 先写 .tmp 再原子改名。
+ * tilesDir 已是发布目录时只写清单（全量烘焙后同卷改名发布，避免再占一份磁盘）。
  */
 public final class FileManifestPublisher implements ManifestPublisher {
 
@@ -25,19 +26,19 @@ public final class FileManifestPublisher implements ManifestPublisher {
     public Path publish(String mapId, Path tilesDir, MapManifest manifest, Path publishRoot) {
         Path mapDir = publishRoot.resolve(mapId);
         try {
-            if (Files.isDirectory(mapDir)) {
-                try (Stream<Path> walk = Files.walk(mapDir)) {
-                    walk.sorted(Comparator.reverseOrder()).forEach(p -> deleteQuietly(p));
+            Path source = tilesDir.toAbsolutePath().normalize();
+            Path target = mapDir.toAbsolutePath().normalize();
+            if (!source.equals(target)) {
+                if (Files.isDirectory(target)) {
+                    deleteTree(target);
                 }
-            }
-            Files.createDirectories(mapDir);
-            copyTree(tilesDir.resolve("tiles"), mapDir.resolve("tiles"));
-            Files.copy(tilesDir.resolve("atlas.png"), mapDir.resolve("atlas.png"),
-                    StandardCopyOption.REPLACE_EXISTING);
-            Path layoutSource = tilesDir.resolve(AtlasLayoutFiles.FILE_NAME);
-            if (Files.isRegularFile(layoutSource)) {
-                Files.copy(layoutSource, mapDir.resolve(AtlasLayoutFiles.FILE_NAME),
+                Files.createDirectories(target);
+                copyTree(source.resolve("tiles"), target.resolve("tiles"));
+                Files.copy(source.resolve("atlas.png"), target.resolve("atlas.png"),
                         StandardCopyOption.REPLACE_EXISTING);
+                copyIfPresent(source.resolve(AtlasLayoutFiles.FILE_NAME),
+                        target.resolve(AtlasLayoutFiles.FILE_NAME));
+                copyIfPresent(source.resolve("heightfield.bin"), target.resolve("heightfield.bin"));
             }
 
             Path manifestFile = mapDir.resolve("manifest.json");
@@ -64,6 +65,18 @@ public final class FileManifestPublisher implements ManifestPublisher {
                     Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
                 }
             }
+        }
+    }
+
+    private static void copyIfPresent(Path from, Path to) throws IOException {
+        if (Files.isRegularFile(from) && !from.equals(to)) {
+            Files.copy(from, to, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void deleteTree(Path dir) throws IOException {
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> deleteQuietly(p));
         }
     }
 

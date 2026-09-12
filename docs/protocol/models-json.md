@@ -26,7 +26,7 @@ bake 链路优先于静态模型解析消费（mod 方块的真实几何由此�
 | `tint` | 染色索引，-1 = 不染色 |
 | `shade` | 是否参与明暗着色 |
 | `tex` | 图集 sprite id（如 `minecraft:block/stone`） |
-| `pos` | 12 个浮点 = 4 顶点 × xyz，模型局部 0~16 空间，已含变体旋转 |
+| `pos` | 12 个浮点 = 4 顶点 × xyz，模型局部 0~16 空间，已含变体旋转。采集侧把 BakedQuad 的 0~1 方块坐标 ×16 后再写出 |
 | `uv` | 8 个浮点 = 4 顶点 × uv，0~16 贴图坐标 |
 
 语义对齐 bake-context `Quad` record 1:1；光照 / AO / 群系染色不在产物内，
