@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import {
+  configureHiresAtlas,
+  configureLodColormap,
   disposeTileGroup,
   TileGeometryError,
   validateTileGroup,
@@ -90,5 +92,28 @@ describe("disposeTileGroup 资源释放", () => {
     });
     disposeTileGroup(group2);
     expect(sharedDisposed).toBe(false);
+  });
+});
+
+describe("图集过滤约定", () => {
+  it("hires 图集禁用 mipmap 与 anisotropy，避免格子串色", () => {
+    const texture = new THREE.Texture();
+    configureHiresAtlas(texture);
+    expect(texture.magFilter).toBe(THREE.NearestFilter);
+    expect(texture.minFilter).toBe(THREE.NearestFilter);
+    expect(texture.generateMipmaps).toBe(false);
+    expect(texture.anisotropy).toBe(1);
+    expect(texture.flipY).toBe(false);
+    expect(texture.colorSpace).toBe(THREE.SRGBColorSpace);
+  });
+
+  it("LOD 色图 LINEAR 无 mip，flipY=false", () => {
+    const texture = new THREE.Texture();
+    configureLodColormap(texture);
+    expect(texture.magFilter).toBe(THREE.LinearFilter);
+    expect(texture.minFilter).toBe(THREE.LinearFilter);
+    expect(texture.generateMipmaps).toBe(false);
+    expect(texture.flipY).toBe(false);
+    expect(texture.wrapS).toBe(THREE.ClampToEdgeWrapping);
   });
 });

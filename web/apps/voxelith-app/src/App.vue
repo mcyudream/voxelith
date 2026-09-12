@@ -273,6 +273,13 @@ onMounted(async () => {
     deviceProfile,
     // 烘焙光照全局参数（天空光/方块光/AO 强度，调 value 即时生效）
     lighting: LightingUniforms,
+    /** 排障：只看 hires / 只看 lod / 全部。每帧 update 会尊重此过滤。 */
+    setLayer(filter: "all" | "hires" | "lod") {
+      tileManager?.setLayerFilter(filter);
+    },
+    loadedByLevel() {
+      return tileManager?.loadedByLevel();
+    },
     /** 自动化定位：摆相机并让当前控制器吸收新朝向 */
     setView(px: number, py: number, pz: number, tx: number, ty: number, tz: number) {
       if (!engine) return;

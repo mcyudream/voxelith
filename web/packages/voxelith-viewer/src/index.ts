@@ -22,6 +22,8 @@ export {
 } from "./engine/deviceTier.js";
 export { TileManager, type TileManagerOptions } from "./tiles/TileManager.js";
 export {
+  configureHiresAtlas,
+  configureLodColormap,
   disposeTileGroup,
   GlbTileLoader,
   LightingUniforms,

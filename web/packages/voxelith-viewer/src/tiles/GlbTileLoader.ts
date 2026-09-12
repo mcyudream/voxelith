@@ -116,10 +116,39 @@ export interface GlbTileLoaderOptions {
   /**
    * hires 共享图集纹理：替换每瓦片内嵌的图集副本（每个 hires glb 都内嵌同一张
    * 图集 PNG，GLTFLoader 会逐瓦片解码出独立 GPU 纹理，显存随加载数线性增长）。
-   * 必须按 glTF 约定配置：flipY=false + SRGBColorSpace；过滤参数此处统一设置。
-   * LOD 瓦片的航拍色图逐瓦片不同，不受影响。
+   * 必须按 {@link configureHiresAtlas} 配置；LOD 航拍色图逐瓦片不同，不受影响。
    */
   sharedAtlas?: THREE.Texture;
+}
+
+/**
+ * hires 图集过滤：禁止 mipmap。256² 图集里 69 个格子，任何带 mip 的 minFilter
+ * 都会在格子边界串色，俯视时整片变成彩虹噪点。anisotropy 同样会跨格采样。
+ */
+export function configureHiresAtlas(texture: THREE.Texture): THREE.Texture {
+  texture.flipY = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.anisotropy = 1;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** LOD 航拍色图：与 glTF sampler（LINEAR / LINEAR / CLAMP）一致，不生成 mip。 */
+export function configureLodColormap(texture: THREE.Texture): THREE.Texture {
+  texture.flipY = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.anisotropy = 1;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  return texture;
 }
 
 export class GlbTileLoader {
@@ -129,14 +158,8 @@ export class GlbTileLoader {
   constructor(options: GlbTileLoaderOptions = {}) {
     this.sharedAtlas = options.sharedAtlas;
     if (this.sharedAtlas) {
+      configureHiresAtlas(this.sharedAtlas);
       this.sharedAtlas.userData[SHARED_TEXTURE_KEY] = true;
-      // hires 图集过滤约定在替换前一次性配好（替换发生在 toLitMaterial，逐瓦片再设会
-      // 互相覆盖且 needsUpdate 触发整图重传）：与 MC 原版一致，放大 Nearest 保持像素锐利；
-      // 缩小时 mip 链内取最近点、跨级线性过渡，避免 LinearMipmapLinear 跨图集格子串色。
-      this.sharedAtlas.magFilter = THREE.NearestFilter;
-      this.sharedAtlas.minFilter = THREE.NearestMipmapLinearFilter;
-      this.sharedAtlas.generateMipmaps = true;
-      this.sharedAtlas.anisotropy = 8;
     }
   }
 
@@ -176,21 +199,12 @@ export class GlbTileLoader {
       material.depthWrite = true;
     }
     if (material.map && source.map) {
+      // LOD 色图 sampler 为 LINEAR（9729）；hires 图集为 NEAREST（9728）。
       const linear = source.map.magFilter === THREE.LinearFilter;
       if (linear) {
-        // LOD 航拍色图：线性过滤，视觉上相当于有损压缩而非马赛克单色柱
-        material.map.magFilter = THREE.LinearFilter;
-        material.map.minFilter = THREE.LinearMipmapLinearFilter;
-        material.map.wrapS = THREE.ClampToEdgeWrapping;
-        material.map.wrapT = THREE.ClampToEdgeWrapping;
-      } else {
-        // 与 MC 原版一致：放大 Nearest 保持像素锐利；缩小时在 mipmap 链内取最近点、
-        // 跨 mip 级线性过渡 —— 避免 LinearMipmapLinear 在图集格子边界串色产生的条纹。
-        material.map.magFilter = THREE.NearestFilter;
-        material.map.minFilter = THREE.NearestMipmapLinearFilter;
-      }
-      if (!linear && this.sharedAtlas) {
-        // hires：共享图集替换内嵌副本；内嵌副本立即释放（ImageBitmap + 未上传的 GPU 槽）。
+        configureLodColormap(material.map);
+      } else if (this.sharedAtlas) {
+        // hires：共享图集替换内嵌副本；内嵌副本立即释放。
         // 多 primitive 共享同一内嵌纹理：第二个 mesh 同样换成共享图集，但只 dispose 一次。
         const embedded = material.map;
         material.map = this.sharedAtlas;
@@ -198,10 +212,9 @@ export class GlbTileLoader {
           replaced.add(embedded);
           embedded.dispose();
         }
+      } else {
+        configureHiresAtlas(material.map);
       }
-      material.map.generateMipmaps = true;
-      material.map.anisotropy = linear ? 1 : 8;
-      material.map.needsUpdate = true;
     }
     material.onBeforeCompile = (shader) => {
       // 共享引用：LightingUniforms 的 value 修改自动同步到所有已编译材质

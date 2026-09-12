@@ -7,7 +7,7 @@
    */
 import * as THREE from "three";
 import { tileWorldOrigin, type MapManifest, type ManifestTile } from "@yudream/voxelith-core";
-import { disposeTileGroup, GlbTileLoader } from "./GlbTileLoader.js";
+import { configureHiresAtlas, disposeTileGroup, GlbTileLoader } from "./GlbTileLoader.js";
 
 export interface TileManagerOptions {
   scene: THREE.Scene;
@@ -75,6 +75,8 @@ export class TileManager {
   private readonly frustumMatrix = new THREE.Matrix4();
   private readonly tileBox = new THREE.Box3();
   private readonly traversalStack: ManifestTile[] = [];
+  /** 排障隔离：限制可见层级。默认 all。 */
+  private layerFilter: "all" | "hires" | "lod" = "all";
 
   constructor(options: TileManagerOptions) {
     this.scene = options.scene;
@@ -93,11 +95,10 @@ export class TileManager {
     // 按 glTF 约定配置（flipY=false + SRGBColorSpace），过滤参数由 GlbTileLoader 统一设置。
     // 无 DOM 环境（vitest/node）无法解码图片，跳过共享图集回退逐瓦片内嵌。
     if (!options.loader && options.manifest.atlas?.url && typeof document !== "undefined") {
-      this.sharedAtlas = new THREE.TextureLoader().load(
-        `${this.mapBaseUrl}/${options.manifest.atlas.url}`,
+      this.sharedAtlas = configureHiresAtlas(
+        new THREE.TextureLoader().load(`${this.mapBaseUrl}/${options.manifest.atlas.url}`),
       );
-      this.sharedAtlas.flipY = false;
-      this.sharedAtlas.colorSpace = THREE.SRGBColorSpace;
+      this.sharedAtlas.userData.voxelithShared = true;
     }
     this.loader =
       options.loader ?? new GlbTileLoader({ sharedAtlas: this.sharedAtlas ?? undefined });
@@ -153,7 +154,17 @@ export class TileManager {
 
     // 不在渲染集合中的存活瓦片隐藏但保留（LRU 持有，视角回摆即无感恢复）
     for (const [key, tile] of this.live) {
-      tile.group.visible = renderKeys.has(key);
+      const inRender = renderKeys.has(key);
+      if (!inRender) {
+        tile.group.visible = false;
+        continue;
+      }
+      if (this.layerFilter === "all") {
+        tile.group.visible = true;
+        continue;
+      }
+      const level = Number(key.split(":")[0]);
+      tile.group.visible = this.layerFilter === "hires" ? level === 0 : level > 0;
     }
 
     this.queue = [...candidates.values()].filter(
@@ -381,6 +392,37 @@ export class TileManager {
 
   get failedCount(): number {
     return this.failed.size;
+  }
+
+  /**
+   * 排障隔离：按层级过滤可见性。
+   * - `"hires"`：只显示 level 0
+   * - `"lod"`：只显示 level &gt; 0
+   * - `"all"`：恢复默认
+   */
+  setLayerFilter(filter: "all" | "hires" | "lod"): void {
+    this.layerFilter = filter;
+    for (const [key, tile] of this.live) {
+      const level = Number(key.split(":")[0]);
+      if (filter === "all") {
+        continue;
+      }
+      tile.group.visible = filter === "hires" ? level === 0 : level > 0;
+    }
+  }
+
+  get layerFilterMode(): "all" | "hires" | "lod" {
+    return this.layerFilter;
+  }
+
+  /** 已加载瓦片按层级计数，控制台排障用。 */
+  loadedByLevel(): Record<number, number> {
+    const counts: Record<number, number> = {};
+    for (const key of this.live.keys()) {
+      const level = Number(key.split(":")[0]);
+      counts[level] = (counts[level] ?? 0) + 1;
+    }
+    return counts;
   }
 
   dispose(): void {

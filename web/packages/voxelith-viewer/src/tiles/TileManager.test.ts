@@ -235,4 +235,28 @@ describe("TileManager 代际防竞态与浮点原点", () => {
     expect(scene.children).toContain(group);
     tm.dispose();
   });
+
+  it("setLayerFilter('hires') 隐藏 LOD 组", async () => {
+    const scene = new THREE.Scene();
+    const loader = {
+      load: () => Promise.resolve(makeTrackableGroup().group),
+    };
+    const tm = new TileManager({
+      scene,
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+    tm.update(camera);
+    await flushMicrotasks();
+    tm.setLayerFilter("hires");
+    const inner = tm as unknown as { live: Map<string, { group: THREE.Group }> };
+    for (const [key, tile] of inner.live) {
+      const level = Number(key.split(":")[0]);
+      expect(tile.group.visible).toBe(level === 0);
+    }
+    tm.dispose();
+  });
 });
