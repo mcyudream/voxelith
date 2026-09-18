@@ -1,9 +1,17 @@
 spring:
   application:
     name: voxelith-server
+  servlet:
+    multipart:
+      # 存档压缩包动辄几百 MB～数 GB，默认 1MB 上限会让上传直接 413
+      max-file-size: 4GB
+      max-request-size: 4GB
+      file-size-threshold: 8MB
 
 server:
   port: 8081
+  tomcat:
+    max-swallow-size: -1
 
 # Yudream Voxelith Map Core 全局配置（8080 为本机其他服务占用，固定 8081）
 yudream:
@@ -11,6 +19,13 @@ yudream:
     # 渲染工作目录：中间产物（逐链路确认用）与最终发布产物
     work-dir: ./work
     publish-dir: ./data/maps
+    # 上传存档落盘目录（{upload-dir}/{id}/world.json + 解包结果）
+    upload-dir: ./work/uploads
+    upload:
+      # 只上传 level.dat 时用来找「它是哪个存档」的额外搜索根（逗号分隔，支持 ~ 开头）。
+      # 默认已包含 %APPDATA%\.minecraft\saves、~/.minecraft/saves 与已登记本机存档的上级目录；
+      # 都没命中时错误信息里会列出搜过的根，据此决定要不要往这里加一条。
+      world-roots:     # 例：A:\maps,~/.minecraft/saves
     storage:
       type: file   # file | s3
     s3:
@@ -19,9 +34,34 @@ yudream:
       region: us-east-1
       access-key:
       secret-key:
+    # 地表预览（二维框选用的俯视色图）
+    preview:
+      max-size: 1600   # 预览长边像素上限，抽样步长按此自动推导
+      threads: 0       # 0 = 按 CPU 核数
+    # 网页触发的渲染默认值
+    render:
+      packs:           # 资源包（低→高优先级，逗号分隔）；留空 = 自动发现 .cache/minecraft/client-*.jar
+      models-file:     # runtime 采集产物 models.json.gz；留空 = 自动探测 work-dir 下最新一份
+      mc-version: 1.20.1
+      loader-version: 0.16.14
+      min-y:           # 最低渲染高度；留空 = 不限制（前端按预览算出的地表高度给建议默认值）
+      max-level: 0     # LOD 最高层级，0 = 自动
+      lod-atlas: true
+      # 单次渲染允许的最大非空区块数；0 = 按渲染堆自动估算（约 1.5MB/区块）。
+      # bake 会把窗口内全部区块的网格留在内存里，整图几万区块的窗口必然内存不足——
+      # 超限的窗口会被直接拒绝并提示缩小范围，而不是跑一半失败
+      max-chunks: 0
+      # 渲染子进程的堆上限：8g / 8192m，留空 = 按物理内存 60% 自动（2G 起步、16G 封顶）。
+      # 网页触发的渲染跑在独立 JVM 里：渲染崩了不会带走 web 服务，堆也能单独给
+      heap:
+      # 多遍渲染：窗口超过这个区块数就切成若干批，每批单独 bake→tile→lod 并共用一张预打好的图集。
+      # 内存只与单批大小相关，因此窗口可以任意大（代价是时间与磁盘）；0 = 关闭分遍（单遍渲染）
+      batch-chunks: 2048
     incremental:
       enabled: false
       world-dir:           # 存档根目录（含 region/）
       pack-dir:            # 资源包/原版 jar 路径，bake 静态模型用
+      mod-jars:            # mod jar 路径（逗号分隔），叠在原版包之上，让 mod 方块/贴图可解析
+      models-file:         # runtime 采集产物 models.json.gz；留空则探测 work-dir/models.json.gz
       dimension: minecraft:overworld
       map-id: demo

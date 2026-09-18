@@ -46,6 +46,50 @@ public final class AerialRaster {
         return width <= 0 || depth <= 0;
     }
 
+    public int originX() {
+        return originX;
+    }
+
+    public int originZ() {
+        return originZ;
+    }
+
+    /** 栅格宽（格数，1 格 = 1 方块）。 */
+    public int width() {
+        return width;
+    }
+
+    /** 栅格深（格数，1 格 = 1 方块）。 */
+    public int depth() {
+        return depth;
+    }
+
+    /**
+     * 该格的地表高度（无表面时为 {@code NaN}）。
+     * 内部用 -Infinity 表示空格，对外统一成 NaN，调用方一个 {@code isNaN} 就能判空。
+     */
+    public float topYAt(int cellX, int cellZ) {
+        float y = topY[cellZ * width + cellX];
+        return Float.isFinite(y) ? y : Float.NaN;
+    }
+
+    /**
+     * 整张地表色图（1 像素 = 1 方块，行主序，行 0 = 最小 Z）——后端全景渲染的输入。
+     * 无表面的格子为透明 0，与 {@link #downsample} 的空格一致。
+     */
+    public int[] toArgbGrid() {
+        int[] argb = new int[width * depth];
+        for (int z = 0; z < depth; z++) {
+            for (int x = 0; x < width; x++) {
+                // boxAverage 收的是世界坐标，不是格索引
+                int wx = originX + x;
+                int wz = originZ + z;
+                argb[z * width + x] = boxAverage(wx, wx + 1, wz, wz + 1);
+            }
+        }
+        return argb;
+    }
+
     /**
      * 把朝上表面的线性色按 XZ 包围盒溅到栅格。同格只保留最高表面；
      * 同高（1.5 格内）按面积加权，避免花斑尖端盖住屋顶。

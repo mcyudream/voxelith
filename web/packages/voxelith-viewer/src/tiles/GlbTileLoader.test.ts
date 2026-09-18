@@ -4,6 +4,8 @@ import {
   configureHiresAtlas,
   configureLodColormap,
   disposeTileGroup,
+  resolveLodTexture,
+  resolveTileTexture,
   TileGeometryError,
   validateTileGroup,
 } from "./GlbTileLoader.js";
@@ -115,5 +117,87 @@ describe("图集过滤约定", () => {
     expect(texture.generateMipmaps).toBe(false);
     expect(texture.flipY).toBe(false);
     expect(texture.wrapS).toBe(THREE.ClampToEdgeWrapping);
+  });
+});
+
+describe("resolveTileTexture 层级判据", () => {
+  it("LOD 保留逐瓦片内嵌色图，即使提供了共享图集", () => {
+    const embedded = new THREE.Texture();
+    const shared = new THREE.Texture();
+    const resolved = resolveTileTexture(embedded, true, shared);
+    expect(resolved).toBe(embedded);
+    expect(resolved!.magFilter).toBe(THREE.LinearFilter);
+    expect(resolved!.generateMipmaps).toBe(false);
+  });
+
+  it("hires 换成共享图集", () => {
+    const embedded = new THREE.Texture();
+    const shared = new THREE.Texture();
+    expect(resolveTileTexture(embedded, false, shared)).toBe(shared);
+  });
+
+  it("无共享图集时 hires 就地按图集参数配置", () => {
+    const embedded = new THREE.Texture();
+    const resolved = resolveTileTexture(embedded, false);
+    expect(resolved).toBe(embedded);
+    expect(resolved!.magFilter).toBe(THREE.NearestFilter);
+    expect(resolved!.generateMipmaps).toBe(false);
+  });
+
+  it("sampler 为 NEAREST 的 LOD 不被误判为 hires（回归：半屏色块）", () => {
+    // 旧实现用 source.map.magFilter === LinearFilter 反推层级：
+    // LOD 的 sampler 一旦不是 LINEAR 就被当成 hires，换成共享图集后
+    // 它的 0..1 全幅 UV 去采样整张方块图集 → 整片红/青色块。
+    const lodTexture = new THREE.Texture();
+    lodTexture.magFilter = THREE.NearestFilter;
+    const shared = new THREE.Texture();
+    expect(resolveTileTexture(lodTexture, true, shared)).toBe(lodTexture);
+  });
+
+  it("无内嵌图的 hires（共享图集模式）也拿到共享图集", () => {
+    // 共享图集模式下瓦片只带 UV、不内嵌 PNG：material.map 为 null，
+    // 但清单声明了 atlas，必须挂上共享纹理，否则整片瓦片没有贴图。
+    const shared = new THREE.Texture();
+    expect(resolveTileTexture(null, false, shared)).toBe(shared);
+  });
+
+  it("既无内嵌图也无共享图集时 hires 返回 null（仅顶点色）", () => {
+    expect(resolveTileTexture(null, false, undefined)).toBeNull();
+  });
+
+  it("sampler 为 LINEAR 的 hires 照样换成共享图集", () => {
+    const hiresTexture = new THREE.Texture();
+    hiresTexture.magFilter = THREE.LinearFilter;
+    const shared = new THREE.Texture();
+    expect(resolveTileTexture(hiresTexture, false, shared)).toBe(shared);
+  });
+});
+
+describe("resolveLodTexture 图集页与内嵌色图的优先级", () => {
+  it("无内嵌色图时用该层图集页（全量生成的瓦片）", () => {
+    const atlas = new THREE.Texture();
+    const resolved = resolveLodTexture(null, atlas);
+    expect(resolved).toBe(atlas);
+    // 图集页要按 LOD 色图参数配置：LINEAR、无 mip、flipY=false
+    expect(resolved!.magFilter).toBe(THREE.LinearFilter);
+    expect(resolved!.generateMipmaps).toBe(false);
+    expect(resolved!.flipY).toBe(false);
+    expect(resolved!.wrapS).toBe(THREE.ClampToEdgeWrapping);
+  });
+
+  it("内嵌色图优先于图集页（增量/旧格式瓦片的 UV 是瓦片局部 0..1）", () => {
+    const embedded = new THREE.Texture();
+    const atlas = new THREE.Texture();
+    // 若这里改取 atlas，瓦片会用局部 UV 采整页图集 → 乱色
+    expect(resolveLodTexture(embedded, atlas)).toBe(embedded);
+  });
+
+  it("既无内嵌色图也无图集页时返回 null（仅方向明暗）", () => {
+    expect(resolveLodTexture(null, undefined)).toBeNull();
+  });
+
+  it("只传内嵌色图（清单未声明该层图集）时仍可用", () => {
+    const embedded = new THREE.Texture();
+    expect(resolveLodTexture(embedded, undefined)).toBe(embedded);
   });
 });

@@ -7,6 +7,7 @@ import online.yudream.voxelith.sharedkernel.vo.Identifier;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
 import online.yudream.voxelith.tile.domain.manifest.MapManifest;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestPublisher;
+import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestStore;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileTileArtifactSink;
 import online.yudream.voxelith.tile.infrastructure.glb.GlbTileEncoder;
 import online.yudream.voxelith.tile.infrastructure.image.PngImageCodec;
@@ -82,6 +83,59 @@ class PublishManifestUseCaseTest {
         new PublishManifestUseCase(new FileManifestPublisher())
                 .publish("demo", "演示地图", workDir, outcome, publishRoot);
         assertTrue(Files.isRegularFile(mapDir.resolve("manifest.json")));
+    }
+
+    @Test
+    void publishesLodAtlasPagesAndRoundTripsThemThroughDisk() throws Exception {
+        int[] green = new int[256];
+        java.util.Arrays.fill(green, 0xFF00FF00);
+        GenerateTilesUseCase tiles = new GenerateTilesUseCase(
+                id -> Optional.of(new AtlasTexture(id, 16, 16, green)),
+                new PngImageCodec(), new GlbTileEncoder(), new FileTileArtifactSink());
+        TileOutcome outcome = tiles.generate(new TileCommand(Map.of(
+                new ChunkPos(0, 0), new BakedChunkMeshData(new ChunkPos(0, 0),
+                        List.of(topQuad(0, 64, 0)), Map.of(), 1)),
+                workDir));
+
+        List<LodAtlasPage> pages = List.of(
+                new LodAtlasPage(1, "tiles/lod/1/lod-atlas.png", 64, "aaaa1111"),
+                new LodAtlasPage(2, "tiles/lod/2/lod-atlas.png", 32, "bbbb2222"));
+        MapManifest manifest = new PublishManifestUseCase(new FileManifestPublisher())
+                .publish("lodmap", "LOD 地图", workDir, outcome, pages, publishRoot);
+
+        assertEquals(2, manifest.lodAtlases().size());
+
+        // 落盘 JSON 必须有 lodAtlases，且能被仓储读回（协议三方同步的一部分）
+        String json = Files.readString(publishRoot.resolve("lodmap/manifest.json"));
+        assertTrue(json.contains("\"lodAtlases\""), json);
+        assertTrue(json.contains("tiles/lod/1/lod-atlas.png"), json);
+        assertTrue(json.contains("\"slotSize\": 64"), json);
+
+        MapManifest reloaded = new FileManifestStore(publishRoot).load("lodmap").orElseThrow();
+        assertEquals(2, reloaded.lodAtlases().size());
+        assertEquals(1, reloaded.lodAtlases().get(0).level());
+        assertEquals(64, reloaded.lodAtlases().get(0).slotSize());
+        assertEquals("bbbb2222", reloaded.lodAtlases().get(1).sha1());
+        assertEquals(manifest.version(), reloaded.version());
+    }
+
+    @Test
+    void loadsLegacyManifestWithoutLodAtlases() throws Exception {
+        // 老产物没有该字段：必须能读回（空列表），否则升级即炸旧地图
+        Path mapDir = publishRoot.resolve("legacy");
+        Files.createDirectories(mapDir);
+        Files.writeString(mapDir.resolve("manifest.json"), """
+                {"formatVersion":1,"mapId":"legacy","name":"旧图","version":"0123456789ab",
+                 "generatedAt":"2026-01-01T00:00:00Z",
+                 "settings":{"hiresTileSize":32,"lodCount":1},
+                 "boundsMin":[0,0,0],"boundsMax":[1,1,1],
+                 "atlas":{"url":"atlas.png","size":16,"textureCount":1},
+                 "tiles":[]}
+                """);
+
+        MapManifest loaded = new FileManifestStore(publishRoot).load("legacy").orElseThrow();
+        assertTrue(loaded.lodAtlases().isEmpty());
+        assertEquals("legacy", loaded.mapId());
     }
 
     @Test

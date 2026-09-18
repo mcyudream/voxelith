@@ -11,11 +11,19 @@ import online.yudream.voxelith.world.application.WorldBlockAccess;
 public final class BiomeTintResolver implements TintResolver {
 
     private final ResolvedResourceCatalog catalog;
-    private final WorldBlockAccess world;
+    private final BiomeLookup biomes;
 
     public BiomeTintResolver(ResolvedResourceCatalog catalog, WorldBlockAccess world) {
+        this(catalog, world::biomeAt);
+    }
+
+    /**
+     * 以任意群系来源装配：离屏地表色图（预览）手持区块截面直接给群系，
+     * 避免再走一遍 {@code WorldBlockAccess} 的区块缓存与二次读盘。
+     */
+    public BiomeTintResolver(ResolvedResourceCatalog catalog, BiomeLookup biomes) {
         this.catalog = catalog;
-        this.world = world;
+        this.biomes = biomes;
     }
 
     @Override
@@ -24,7 +32,7 @@ public final class BiomeTintResolver implements TintResolver {
             if (!"minecraft:water".equals(blockId)) {
                 return -1;
             }
-            return world.biomeAt(x, y, z)
+            return biomes.biomeAt(x, y, z)
                     .map(catalog::biomeWaterColor)
                     .orElse(FluidMesher.DEFAULT_WATER_COLOR);
         }
@@ -35,7 +43,7 @@ public final class BiomeTintResolver implements TintResolver {
         if (fixed != null) {
             return fixed;
         }
-        return world.biomeAt(x, y, z)
+        return biomes.biomeAt(x, y, z)
                 .map(biome -> BlockTints.categoryOf(blockId) == BlockTints.Category.FOLIAGE
                         ? catalog.biomeFoliageColor(biome)
                         : catalog.biomeGrassColor(biome))

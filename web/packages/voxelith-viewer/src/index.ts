@@ -12,6 +12,7 @@ export {
   type DecideResult,
 } from "./engine/AdaptiveDistance.js";
 export {
+  cacheLimitsForTier,
   computeTier,
   detectDeviceProfile,
   initialViewDistanceChunks,
@@ -20,13 +21,20 @@ export {
   type DeviceSignals,
   type DeviceTier,
 } from "./engine/deviceTier.js";
-export { TileManager, type TileManagerOptions } from "./tiles/TileManager.js";
+export {
+  evictionScore,
+  retryDelayMs,
+  TileManager,
+  type TileManagerOptions,
+} from "./tiles/TileManager.js";
 export {
   configureHiresAtlas,
   configureLodColormap,
   disposeTileGroup,
   GlbTileLoader,
   LightingUniforms,
+  resolveLodTexture,
+  resolveTileTexture,
   TileGeometryError,
   validateTileGroup,
   type GlbTileLoaderOptions,

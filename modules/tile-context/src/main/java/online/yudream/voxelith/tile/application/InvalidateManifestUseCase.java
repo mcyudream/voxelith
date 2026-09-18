@@ -4,6 +4,7 @@ import online.yudream.voxelith.tile.domain.manifest.MapManifest;
 
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
@@ -73,9 +74,31 @@ public class InvalidateManifestUseCase {
                 contentVersion(next), Instant.now().toString(),
                 new MapManifest.Settings(current.settings().hiresTileSize(), maxLevel + 1),
                 min, max,
-                current.atlas(), List.copyOf(next));
+                current.atlas(), List.copyOf(next), mergeLodAtlases(current, patch));
         store.save(mapId, updated);
         return updated;
+    }
+
+    /**
+     * 图集页合并：补丁给出的按 level 替换，其余沿用清单原值。
+     *
+     * <p>增量重跑不产生图集页（手上只有被替换 region 的栅格，重拼整页会把未变区域抹成透明），
+     * 所以这里通常是原样保留——全量发布过的页在增量后依然有效，被改动的瓦片靠
+     * 「内嵌色图优先」渲染，两者不冲突。</p>
+     */
+    private static List<MapManifest.LodAtlasRef> mergeLodAtlases(MapManifest current, ManifestPatch patch) {
+        if (patch.lodAtlasPages().isEmpty()) {
+            return current.lodAtlases();
+        }
+        Map<Integer, MapManifest.LodAtlasRef> byLevel = new LinkedHashMap<>();
+        for (MapManifest.LodAtlasRef page : current.lodAtlases()) {
+            byLevel.put(page.level(), page);
+        }
+        for (LodAtlasPage page : patch.lodAtlasPages()) {
+            byLevel.put(page.level(), new MapManifest.LodAtlasRef(
+                    page.level(), page.url(), page.slotSize(), page.sha1()));
+        }
+        return List.copyOf(byLevel.values());
     }
 
     static String contentVersion(List<MapManifest.TileEntry> entries) {

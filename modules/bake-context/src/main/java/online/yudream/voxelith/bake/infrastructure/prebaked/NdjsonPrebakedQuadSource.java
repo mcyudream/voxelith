@@ -21,6 +21,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -37,6 +39,21 @@ public final class NdjsonPrebakedQuadSource implements PrebakedQuadSource {
     private final Map<String, Map<String, List<Quad>>> index = new HashMap<>();
 
     private NdjsonPrebakedQuadSource() {
+    }
+
+    @Override
+    public Set<String> textures() {
+        Set<String> ids = new TreeSet<>();
+        for (Map<String, List<Quad>> byState : index.values()) {
+            for (List<Quad> quads : byState.values()) {
+                for (Quad quad : quads) {
+                    if (quad.texture() != null) {
+                        ids.add(quad.texture());
+                    }
+                }
+            }
+        }
+        return ids;
     }
 
     public static NdjsonPrebakedQuadSource load(Path modelsFile) {

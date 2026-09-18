@@ -45,7 +45,7 @@ public class BakeChunksUseCase {
 
     public BakeOutcome bake(BakeCommand command) {
         ChunkMeshBuilder builder = new ChunkMeshBuilder(catalog, world,
-                new BiomeTintResolver(catalog, world), prebaked);
+                new BiomeTintResolver(catalog, world), prebaked, command.minY());
         int total = command.chunks().size();
         AtomicInteger done = new AtomicInteger();
         long startedAt = System.currentTimeMillis();

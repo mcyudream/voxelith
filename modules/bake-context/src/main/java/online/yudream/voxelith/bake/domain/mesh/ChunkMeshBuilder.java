@@ -39,6 +39,12 @@ public final class ChunkMeshBuilder {
     /** runtime 采集的真实 BakedModel quad 源，null = 纯静态模型解析。 */
     private final PrebakedQuadSource prebaked;
 
+    /** minY 取值约定：不限制最低渲染高度。 */
+    public static final int NO_MIN_Y = Integer.MIN_VALUE;
+
+    /** 最低渲染高度（含）；低于它的方块不参与网格化。 */
+    private final int minY;
+
     /** 遮挡判定缓存：模型 id + 方块 id → 各方向是否遮挡。 */
     private final Map<String, Map<Direction, Boolean>> occlusionCache = new ConcurrentHashMap<>();
 
@@ -55,12 +61,34 @@ public final class ChunkMeshBuilder {
 
     public ChunkMeshBuilder(ResolvedResourceCatalog catalog, WorldBlockAccess world,
                             TintResolver tintResolver, PrebakedQuadSource prebaked) {
+        this(catalog, world, tintResolver, prebaked, NO_MIN_Y);
+    }
+
+    /**
+     * @param minY 最低渲染高度（含）；低于它的方块不参与网格化。地下洞穴/矿层对地表地图没有价值，
+     *             却是几何与内存的大头；截面处向下的面按世界数据照常被遮挡剔除，不会漏光。
+     */
+    public ChunkMeshBuilder(ResolvedResourceCatalog catalog, WorldBlockAccess world,
+                            TintResolver tintResolver, PrebakedQuadSource prebaked, int minY) {
         this.catalog = catalog;
         this.world = world;
         this.tintResolver = tintResolver;
         this.prebaked = prebaked;
+        this.minY = minY;
         this.lightSampler = new VertexLightSampler(world, this::isOpaqueCube);
         this.fluidMesher = new FluidMesher(world, this::occludes, lightSampler, tintResolver);
+    }
+
+    /**
+     * 本节第一个需要网格化的层号（0..16）。16 = 整节都在最低高度以下。
+     * 显式与 {@link #NO_MIN_Y} 比较后再做减法：NO_MIN_Y 是 Integer.MIN_VALUE，
+     * 让它参与算术会溢出，写出依赖溢出方向的代码太脆。
+     */
+    private int firstVisibleLayer(int baseY) {
+        if (minY == NO_MIN_Y || minY <= baseY) {
+            return 0;
+        }
+        return Math.min(16, minY - baseY);
     }
 
     public ChunkMeshResult buildChunk(ChunkPos pos) {
@@ -72,8 +100,12 @@ public final class ChunkMeshBuilder {
         int baseZ = pos.z() * 16;
         for (int sectionY : world.sectionYs(pos)) {
             int baseY = sectionY * 16;
+            int lyStart = firstVisibleLayer(baseY);
+            if (lyStart >= 16) {
+                continue;   // 整节都在最低高度以下：跳过（省掉整节的光照网格与遍历）
+            }
             SectionGrid lightGrid = lightSampler.buildGrid(baseX, baseY, baseZ);
-            for (int ly = 0; ly < 16; ly++) {
+            for (int ly = lyStart; ly < 16; ly++) {
                 for (int lz = 0; lz < 16; lz++) {
                     for (int lx = 0; lx < 16; lx++) {
                         int x = baseX + lx;

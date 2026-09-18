@@ -24,9 +24,45 @@ export interface TileManagerOptions {
   /** 细节视距（区块）：视距内正常细分到 hires；视距外不剔除，而是按水平距离
    *  每翻一倍允许的最细层级粗一级（逐级 LOD），最粗层封顶；缺省不限 */
   detailDistanceChunks?: number;
+  /** 单个瓦片的加载尝试上限（含首次），超限后本次会话不再重试；默认 3 */
+  maxTileAttempts?: number;
+  /** 失败重试基础退避（毫秒，按尝试次数指数增长）；默认 1000 */
+  retryBaseDelayMs?: number;
+  /** 失败重试退避上限（毫秒）；默认 30000 */
+  retryMaxDelayMs?: number;
+  /** 单调时钟注入点（测试用）；缺省 performance.now */
+  now?: () => number;
   onTileLoaded?: (tile: ManifestTile, loaded: number, total: number) => void;
   /** 加载器注入点（测试/自定义管线）；缺省用内置 GlbTileLoader（可带共享图集）。 */
   loader?: Pick<GlbTileLoader, "load">;
+}
+
+/** 失败瓦片的退避状态。 */
+interface FailedTile {
+  /** 已尝试次数（含首次失败） */
+  attempts: number;
+  /** 早于该时刻不重新入队（毫秒时间戳） */
+  retryAt: number;
+}
+
+/**
+ * 失败重试的指数退避：第 n 次失败后等 base × 2^(n-1) 毫秒，封顶 max。
+ * 纯函数，便于单测。
+ */
+export function retryDelayMs(attempts: number, base: number, max: number): number {
+  if (attempts <= 0) {
+    return 0;
+  }
+  return Math.min(max, base * 2 ** (attempts - 1));
+}
+
+/**
+ * LRU 淘汰打分：越大越先淘汰。帧龄按 ×1000 折算成方块距离，于是「上一帧用过」
+ * 与「一千方块外」等价 —— 等效于 LRU 优先，距离只决定同期瓦片之间的先后。
+ * 纯函数，便于单测。
+ */
+export function evictionScore(distance: number, ageFrames: number): number {
+  return distance + ageFrames * 1000;
 }
 
 interface LiveTile {
@@ -45,18 +81,28 @@ export class TileManager {
   private readonly maxLoaded: number;
   private readonly maxBytes: number;
   private readonly lodFactor: number;
+  private readonly maxTileAttempts: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
+  private readonly now: () => number;
   private readonly onTileLoaded?: TileManagerOptions["onTileLoaded"];
   /** 细节视距（方块）；Infinity = 视距内外无差别。由 AdaptiveDistance 每帧平滑写入 */
   private detailDistance = Infinity;
 
   private readonly loader: Pick<GlbTileLoader, "load">;
   private readonly sharedAtlas: THREE.Texture | null = null;
+  /**
+   * LOD 每层共享图集页（level → 纹理）。全量生成的 LOD 瓦片不含内嵌色图，其 UV 已烘焙成
+   * 图集坐标；由 GlbTileLoader 在 LOD 分支挂上对应层的页。所有权在本管理器，随 dispose 释放。
+   */
+  private readonly lodAtlases = new Map<number, THREE.Texture>();
   private readonly live = new Map<string, LiveTile>();
   private readonly byKey = new Map<string, ManifestTile>();
   private readonly topLevelTiles: ManifestTile[] = [];
   private readonly topLevel: number;
   private readonly loading = new Set<string>();
-  private readonly failed = new Set<string>();
+  /** 失败瓦片 → 退避状态。超过 maxTileAttempts 的条目保留为「永久失败」（仅计数与 HUD 用）。 */
+  private readonly failed = new Map<string, FailedTile>();
   private queue: ManifestTile[] = [];
   private frame = 0;
   private loadedBytes = 0;
@@ -86,6 +132,10 @@ export class TileManager {
     this.maxLoaded = options.maxLoaded ?? 4096;
     this.maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
     this.lodFactor = options.lodFactor ?? 3;
+    this.maxTileAttempts = options.maxTileAttempts ?? 3;
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
+    this.retryMaxDelayMs = options.retryMaxDelayMs ?? 30000;
+    this.now = options.now ?? (() => performance.now());
     if (options.detailDistanceChunks !== undefined) {
       this.detailDistance = options.detailDistanceChunks * 16;
     }
@@ -100,8 +150,21 @@ export class TileManager {
       );
       this.sharedAtlas.userData.voxelithShared = true;
     }
+    // LOD 每层共享图集页：一层一张纹理，取代上千张逐瓦片色图。
+    // 与 hires 同理，无 DOM 环境（vitest/node）解不了图，跳过并回退逐瓦片内嵌色图。
+    if (!options.loader && typeof document !== "undefined") {
+      for (const page of options.manifest.lodAtlases) {
+        const texture = new THREE.TextureLoader().load(
+          // 页内容哈希做版本戳：页路径固定，不带戳会被 7 天强缓存挡住更新
+          `${this.mapBaseUrl}/${page.url}?sha=${encodeURIComponent(page.sha1)}`,
+        );
+        texture.userData.voxelithShared = true;
+        this.lodAtlases.set(page.level, texture);
+      }
+    }
     this.loader =
-      options.loader ?? new GlbTileLoader({ sharedAtlas: this.sharedAtlas ?? undefined });
+      options.loader ??
+      new GlbTileLoader({ sharedAtlas: this.sharedAtlas ?? undefined, lodAtlases: this.lodAtlases });
     for (const tile of options.manifest.tiles) {
       this.byKey.set(this.key(tile), tile);
       if (tile.level === this.topLevel) {
@@ -168,19 +231,31 @@ export class TileManager {
     }
 
     this.queue = [...candidates.values()].filter(
-      (tile) => !this.loading.has(this.key(tile)) && !this.failed.has(this.key(tile)),
+      (tile) => !this.loading.has(this.key(tile)) && this.isSchedulable(this.key(tile)),
     );
     this.sortQueue();
 
     while (this.loading.size < this.maxConcurrent && this.queue.length > 0) {
       const tile = this.queue.shift()!;
       const key = this.key(tile);
-      if (this.live.has(key) || this.failed.has(key)) {
+      if (this.live.has(key) || !this.isSchedulable(key)) {
         continue;
       }
       this.loading.add(key);
       void this.loadTile(tile, key);
     }
+  }
+
+  /**
+   * 是否可入队：无失败记录直接可；失败过则需未达尝试上限且已过退避时刻。
+   * 瞬时网络错误不再导致该瓦片本次会话永久缺失。
+   */
+  private isSchedulable(key: string): boolean {
+    const failure = this.failed.get(key);
+    if (!failure) {
+      return true;
+    }
+    return failure.attempts < this.maxTileAttempts && this.now() >= failure.retryAt;
   }
 
   /** LOD 四叉树遍历：从最粗层级向下，够近且有子瓦片则细分，返回期望渲染的瓦片集合。 */
@@ -314,8 +389,12 @@ export class TileManager {
   private async loadTile(tile: ManifestTile, key: string): Promise<void> {
     const generation = this.generation;
     try {
-      // 版本戳防 HTTP 强缓存拿到旧版瓦片（瓦片同 URL 覆盖发布）
-      const group = await this.loader.load(`${this.mapBaseUrl}/${tile.url}?v=${this.manifest.version}`);
+      // 版本戳用瓦片自身 sha1：内容未变的瓦片跨地图版本继续命中 7 天强缓存，
+      // 而 manifest.version 是全图聚合哈希，任一瓦片变化都会让全部 URL 失效。
+      const group = await this.loader.load(
+        `${this.mapBaseUrl}/${tile.url}?sha=${encodeURIComponent(tile.sha1)}`,
+        tile.level,
+      );
       if (generation !== this.generation || this.live.has(key)) {
         // 迟到/重复结果：所属管理器已换图或该瓦片已被另一路径加载，直接销毁防泄漏
         disposeTileGroup(group);
@@ -352,24 +431,33 @@ export class TileManager {
         ),
       });
       this.loadedBytes += tile.bytes;
+      this.failed.delete(key);
       this.evictIfNeeded();
       this.onTileLoaded?.(tile, this.live.size, this.manifest.tiles.length);
     } catch (error) {
-      this.failed.add(key);
-      console.error(`瓦片加载失败 ${key}:`, error);
+      const attempts = (this.failed.get(key)?.attempts ?? 0) + 1;
+      this.failed.set(key, {
+        attempts,
+        retryAt: this.now() + retryDelayMs(attempts, this.retryBaseDelayMs, this.retryMaxDelayMs),
+      });
+      console.error(`瓦片加载失败 ${key}（第 ${attempts}/${this.maxTileAttempts} 次）:`, error);
     } finally {
       this.loading.delete(key);
     }
   }
 
-  /** 双阈值滞回淘汰：数量或字节超限，淘汰最久未用（优先远离视点）的瓦片。 */
+  /**
+   * 双阈值滞回淘汰：数量或字节超限，淘汰最久未用（优先远离视点）的瓦片。
+   * 打分把「帧龄 × 1000」与「方块距离」相加，因此一帧的陈旧就压过千方块的距离——
+   * 等价于 LRU 优先，刚加载且仍在视点附近的瓦片天然最后被淘汰。
+   */
   private evictIfNeeded(): void {
     while (this.live.size > this.maxLoaded || this.loadedBytes > this.maxBytes) {
       let victimKey: string | null = null;
       let victimScore = -Infinity;
       for (const [key, tile] of this.live) {
         const distance = tile.center.distanceTo(this.viewPosition);
-        const score = distance + (this.frame - tile.lastUsed) * 1000;
+        const score = evictionScore(distance, this.frame - tile.lastUsed);
         if (score > victimScore) {
           victimScore = score;
           victimKey = key;
@@ -436,5 +524,9 @@ export class TileManager {
     this.queue = [];
     this.loadedBytes = 0;
     this.sharedAtlas?.dispose();
+    for (const atlas of this.lodAtlases.values()) {
+      atlas.dispose();
+    }
+    this.lodAtlases.clear();
   }
 }

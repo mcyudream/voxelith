@@ -102,6 +102,40 @@ class ModelGeometryBakerTest {
         assertThat((double) (maxZ - minZ)).isCloseTo(16.0, within(0.1));
     }
 
+    @Test
+    void skipsFacesWithoutTextureKeyLikeVanilla() {
+        // 没有 texture 键的面按原版语义不渲染。装饰类 mod（方块小镇等）会用这种面做占位；
+        // 若照旧产出四边形，会带 null 贴图一路走到图集打包处抛 NPE（真实故障）。
+        Map<String, ModelData.FaceData> faces = new LinkedHashMap<>();
+        faces.put("up", new ModelData.FaceData(null, "#all", null, 0, -1));
+        faces.put("north", new ModelData.FaceData(null, null, null, 0, -1));
+        ModelData.ElementData element = new ModelData.ElementData(
+                new float[]{0, 0, 0}, new float[]{16, 16, 16}, null, true, faces);
+        ModelData model = new ModelData(Map.of("all", "minecraft:block/stone"), List.of(element), true);
+
+        List<Quad> quads = baker.bake(model, 0, 0);
+
+        assertThat(quads).hasSize(1);
+        assertThat(quads.getFirst().face()).isEqualTo("up");
+        assertThat(quads).allSatisfy(q -> assertThat(q.texture()).isNotNull());
+    }
+
+    @Test
+    void referencedButUndeclaredTextureVariableFallsBackToMissingSentinel() {
+        // 面声明了 texture 引用但模型没声明该变量：原版渲染 missing 贴图（几何保留）。
+        // 返回 null 会让贴图采样/图集打包抛 NPE（真实故障）。
+        Map<String, ModelData.FaceData> faces = new LinkedHashMap<>();
+        faces.put("up", new ModelData.FaceData(null, "#undeclared", null, 0, -1));
+        ModelData.ElementData element = new ModelData.ElementData(
+                new float[]{0, 0, 0}, new float[]{16, 16, 16}, null, true, faces);
+        ModelData model = new ModelData(Map.of(), List.of(element), true);
+
+        List<Quad> quads = baker.bake(model, 0, 0);
+
+        assertThat(quads).hasSize(1);
+        assertThat(quads.getFirst().texture()).isEqualTo(ModelGeometryBaker.MISSING_TEXTURE);
+    }
+
     /** 满方块 cube_all 风格模型：六面同贴图 + 各向 cullface。 */
     static ModelData cubeAll(String texture) {
         Map<String, ModelData.FaceData> faces = new LinkedHashMap<>();

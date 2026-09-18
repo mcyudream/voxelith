@@ -81,6 +81,18 @@ public final class FileManifestStore implements ManifestStore {
         atlas.addProperty("textureCount", manifest.atlas().textureCount());
         root.add("atlas", atlas);
 
+        // LOD 层级图集页：始终写出（空数组也写），前端 schema 用 default([]) 兼容旧清单
+        JsonArray lodAtlases = new JsonArray();
+        for (MapManifest.LodAtlasRef page : manifest.lodAtlases()) {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("level", page.level());
+            entry.addProperty("url", page.url());
+            entry.addProperty("slotSize", page.slotSize());
+            entry.addProperty("sha1", page.sha1());
+            lodAtlases.add(entry);
+        }
+        root.add("lodAtlases", lodAtlases);
+
         JsonArray tiles = new JsonArray();
         for (MapManifest.TileEntry tile : manifest.tiles()) {
             JsonObject entry = new JsonObject();
@@ -111,6 +123,15 @@ public final class FileManifestStore implements ManifestStore {
                     t.get("bytes").getAsInt(), t.get("quads").getAsInt(),
                     floats(t.getAsJsonArray("min")), floats(t.getAsJsonArray("max"))));
         }
+        List<MapManifest.LodAtlasRef> lodAtlases = new ArrayList<>();
+        if (root.has("lodAtlases") && root.get("lodAtlases").isJsonArray()) {
+            for (JsonElement el : root.getAsJsonArray("lodAtlases")) {
+                JsonObject p = el.getAsJsonObject();
+                lodAtlases.add(new MapManifest.LodAtlasRef(
+                        p.get("level").getAsInt(), p.get("url").getAsString(),
+                        p.get("slotSize").getAsInt(), p.get("sha1").getAsString()));
+            }
+        }
         return new MapManifest(
                 root.get("formatVersion").getAsInt(),
                 root.get("mapId").getAsString(),
@@ -126,7 +147,8 @@ public final class FileManifestStore implements ManifestStore {
                         atlas.get("url").getAsString(),
                         atlas.get("size").getAsInt(),
                         atlas.get("textureCount").getAsInt()),
-                List.copyOf(tiles));
+                List.copyOf(tiles),
+                List.copyOf(lodAtlases));
     }
 
     private static JsonArray floats(float[] values) {

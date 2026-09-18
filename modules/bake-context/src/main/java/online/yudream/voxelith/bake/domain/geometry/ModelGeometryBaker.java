@@ -15,12 +15,24 @@ public final class ModelGeometryBaker {
 
     private static final float[] CENTER = {8, 8, 8};
 
+    /**
+     * 引用不到贴图时的哨兵 id：原版对这种面渲染成 missing 贴图（而不是丢掉几何）。
+     * 用哨兵而不是 null，是因为 null 会一路流到贴图采样与图集打包处抛 NPE；
+     * 哨兵在资源侧查不到，tile 侧会把它落到图集兜底格（品红/黑棋盘格）。
+     */
+    public static final String MISSING_TEXTURE = online.yudream.voxelith.sharedkernel.vo.MissingTexture.ID;
+
     public List<Quad> bake(ModelData model, int variantX, int variantY) {
         List<Quad> quads = new ArrayList<>();
         for (ModelData.ElementData element : model.elements()) {
             for (var entry : element.faces().entrySet()) {
                 Direction dir = Direction.byName(entry.getKey());
                 ModelData.FaceData face = entry.getValue();
+                // 没有 texture 键的面按原版语义「不渲染」：直接跳过而不是产出一个无贴图四边形。
+                // 大量装饰类 mod（如方块小镇）会用这种面做占位/开关；放过去会一路 null 到图集打包处崩掉。
+                if (face.texture() == null) {
+                    continue;
+                }
 
                 float[][] corners = FaceProjection.corners(dir, element.from(), element.to());
                 float[][] uvs = FaceProjection.uvs(dir, element.from(), element.to(), face.uv(), face.rotation());
@@ -69,7 +81,9 @@ public final class ModelGeometryBaker {
             return null;
         }
         String key = reference.startsWith("#") ? reference.substring(1) : reference;
-        return model.textures().get(key);
+        String resolved = model.textures().get(key);
+        // 引用了未声明的变量：原版渲染成 missing 贴图，这里用哨兵 id 保持「有几何、无贴图」语义
+        return resolved == null ? MISSING_TEXTURE : resolved;
     }
 
     private static float[] normalize(float[] v) {

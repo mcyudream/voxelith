@@ -90,7 +90,67 @@ voxelith/
 
 > 本机 8080 端口被其他服务占用，voxelith-server 固定使用 **8081**（application.yml 默认值）。
 
-> 全量渲染管线（resolve→scan→bake→tile→lod→manifest）当前由 jshell 串联各限界上下文用例执行，产物落盘 `work/` 与 `data/maps/{mapId}/`；仓库内暂无独立 CLI / Gradle 任务（列入 Phase 7）。
+> 全量渲染管线（resolve→scan→bake→tile→lod→manifest）当前由 jshell 串联各限界上下文用例执行，产物落盘 `work/` 与 `data/maps/{mapId}/`；其中**采集段**已收进仓库（见下节），其余仍由 jshell 驱动。
+
+### 后端：网页上传 + 可视化框选渲染
+
+不想再手敲 region 窗口时，可以在网页上完成「上传存档 → 二维框选范围 → 后台渲染」整条链路。前端入口是工具栏的 **＋ 上传地图**。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/uploads` | 已登记的存档列表 |
+| `GET` | `/api/uploads/{id}` | 存档详情 + 各维度 region/区块规模与内容包围盒 |
+| `POST` | `/api/uploads/archive` | multipart 上传 `.zip` 存档（字段 `file`、可选 `name`） |
+| `POST` | `/api/uploads/local` | 登记本机已有存档目录（`{"path","name"}`），不复制文件 |
+| `DELETE` | `/api/uploads/{id}` | 注销存档 |
+| `POST` / `GET` | `/api/uploads/{id}/preview?dimension=` | 启动 / 查询二维地表预览生成进度 |
+| `GET` | `/api/uploads/{id}/preview.png?dimension=` | 预览图（PNG） |
+| `GET` | `/api/render/defaults` | 资源包、采集产物、本机原版 jar 候选的自动发现结果 |
+| `POST` | `/api/render/jobs` | 提交渲染任务（见下） |
+| `GET` | `/api/render/jobs` / `/api/render/jobs/{id}` | 任务列表 / 单个任务状态与阶段进度 |
+| `GET` | `/api/render/jobs/{id}/log?since=N` | 增量拉取任务日志（`since` 为已读行数） |
+| `GET` | `/api/local-worlds?root=&depth=` | 扫描目录下含 `level.dat` 的存档候选 |
+
+`POST /api/render/jobs` 请求体（除 `uploadId`/`mapId`/范围外均可省略，缺省走 `application.yml`）：
+
+```json
+{
+  "uploadId": "西南科大青义-e92e5",
+  "mapId": "swust-campus",
+  "mapName": "西南科大青义",
+  "dimension": "minecraft:overworld",
+  "minX": 2944, "maxX": 3456, "minZ": 256, "maxZ": 768,
+  "minY": -16, "maxLevel": 0, "lodAtlas": true,
+  "packs": ["<client.jar>"], "modelsFile": "<models.json.gz>"
+}
+```
+
+实现要点：
+
+- **预览（框选底座）** —— `WorldPreviewRenderer` 把存档压成二维俯视色图：按 region 并行采样，每像素取 `step`（2 的幂，1~64）个方块中最高非空气方块，走 `BiomeTintResolver` 群系染色 + `TextureColorSampler` 贴图平均色；拿不到资源包时退回内置地表色表。产物 PNG + 地理信息 JSON 缓存在 `work/preview/`，重启后直接复用。
+- **建议 minY** —— 预览顺带统计抽样列的地表高度范围（`minSurfaceY`/`maxSurfaceY`）并透传给前端，前端据此给「最低渲染高度」一个默认值（`minSurfaceY - 16`，按 section 对齐）。存档高度差异极大，写死的默认值会把整片几何裁掉。
+- **地理信息版本** —— 缓存的 JSON 带 `version`，字段增减时递增即可让旧缓存自动重算。
+- **任务执行** —— `RenderJobService` 把框选范围翻译成 `RenderMapOptions`，直接复用 `RenderMapCli`（与命令行同一条管线），把管线输出按行解析成阶段进度。日志按 `\n` 成行后再落盘：`PrintStream` 会在每次 `printf` 片段后 flush，若把 flush 也当断行，一行会被拆成好几条。
+
+> 进程内触发渲染时无法注入 Gradle 的 worker classpath，因此网页链路固定 `skipHarvest=true`——**模型几何需事先用 `harvestModels` 采集好**，否则 bake 会退化为静态解析、mod 方块缺几何。
+
+### 后端：headless 采集（mod 方块模型）
+
+`models.json.gz` 是 bake 的模型来源——它由 headless Fabric worker 全量烘焙导出，**mod 方块只要注册进 `Registries.BLOCK` 就会一并导出**。采集走独立 JVM 子进程（ADR 0001），因此由 Gradle 任务自动注入 worker classpath：
+
+```bash
+# 原版采集（首次会下载 MC/Fabric 依赖，约 60MB，缓存在 work/.provision-cache）
+./gradlew :apps:voxelith-server:harvestModels -PpackDir=<原版 client.jar>
+
+# 带 mod：mod jar 会作为资源包叠在原版之上，其方块模型一并采集
+./gradlew :apps:voxelith-server:harvestModels \
+    -PpackDir=<原版 client.jar> \
+    -Pmods=<mod1.jar>,<mod2.jar>
+```
+
+产物与报告：`work/models.json.gz`、`work/model-acquisition.json`（来源 = `RUNTIME_HARVEST` / `STATIC_FALLBACK`）、`work/worker.log`。可选参数：`-PmcVersion -PloaderVersion -PworkDir -PprovisionCache -PtimeoutMinutes -PskipProvision`（`-PskipProvision=true` 只跑 LWJGL 自检，用于排障）。
+
+采集失败会自动降级为 jar 资源静态解析，并把原因写进报告；`STATIC_FALLBACK` 下 mod 自定义模型加载器（loader/IBakedModel）无法静态还原，mod 方块会缺几何——**要完整渲染 mod 方块必须让采集成功**。
 
 ### 后端：region 增量更新（可选）
 
@@ -99,12 +159,17 @@ voxelith/
 ```yaml
 yudream:
   voxelith:
+    work-dir: ./work        # bake 默认在此找 models.json.gz（可用 incremental.models-file 覆盖）
     incremental:
       enabled: true
       world-dir: <存档根目录（含 region/）>
       pack-dir: <资源包 / 原版 jar 路径>
+      mod-jars: <mod jar 路径，逗号分隔>   # 叠在原版包之上，mod 方块/贴图才能解析
+      models-file:                        # 留空 = 探测 work-dir/models.json.gz
       map-id: demo
 ```
+
+> bake 会优先消费 `models.json.gz`（runtime 采集的真实 BakedModel），查不到的方块才落回静态模型目录；产物缺失时记一条 warn 并纯走静态解析，不影响启动。
 
 ### 前端：开发调试
 
@@ -137,8 +202,8 @@ pnpm -r build                       # 全部包 + 应用构建
 2. **scan** — 读 level.dat 判 DataVersion，扫描 region 产出任务分片；
 3. **bake** — 按 blockstate 去重烘焙 quad，cullface 剔除，sky/block light + 角点 AO 烘进顶点属性；
 4. **tile** — 32×32 方块/片组装，glb 编码落盘 `tiles/hires/...`；
-5. **lod** — 柱状 LOD 逐层聚合上采样，产出 `tiles/lod/{level}/...`；
-6. **manifest** — 生成 `manifest.json`（瓦片索引、包围盒、图集、每瓦片 sha1），原子发布。
+5. **lod** — 柱状 LOD 逐层聚合上采样，产出 `tiles/lod/{level}/...`，并按层把航拍色图拼成共享图集页 `tiles/lod/{level}/lod-atlas.png`（瓦片只带图集 UV，前端每层只解码一张纹理）；
+6. **manifest** — 生成 `manifest.json`（瓦片索引、包围盒、图集、LOD 图集页、每瓦片 sha1），原子发布。
 
 > 管线检查点写入 `work/`，同 runId 重跑时跳过「已完成且产物健在」的阶段/分片；世界 region 增减导致分片数变化时视为新阶段，丢弃旧分片进度。
 
@@ -148,8 +213,10 @@ pnpm -r build                       # 全部包 + 应用构建
 - **多级 LOD**：从最粗层级向下四叉树遍历，几何距离 + 屏幕空间误差双判据细分；超出细节视距不剔除，按水平距离每翻倍允许的最细层级 +1，逐级过渡（无雾效遮掩边界）。期望瓦片未到时以已加载祖先垫底，中间缺失层不入队以免踏脚石占满带宽。
 - **自适应视距**：设备分档（高/中/低 → 24/16/10 区块初始视距）+ FPS 窗口化调节（3 秒窗口，低于目标 85% 缩、连续两窗高于 97% 增，步进 1 区块，8–32 夹取，平滑过渡）；桌面目标 60fps、移动端 30fps；WebView 安全兜底，设备画像 localStorage 缓存。
 - **烘焙光照**：skyLight/blockLight/AO 烘进 glb 顶点属性，着色器按昼夜参数化调光（天空光 / 方块光 / AO 三档实时滑杆）。
-- **瓦片缓存**：数量 + 字节双阈值滞回 LRU，帧内 mark-used、超限淘汰最久未用（优先远离视点）；代际戳防快速切图竞态。
-- **共享图集**：hires 瓦片内嵌同一张图集 PNG，前端按清单 `atlas` 引用只解码一次，避免逐瓦片解码耗尽显存。
+- **瓦片缓存**：数量 + 字节双阈值滞回 LRU，帧内 mark-used、超限淘汰最久未用（优先远离视点）；代际戳防快速切图竞态；上限按设备档位收紧（高/中/低 → 4096/2048/1024 片）。
+- **加载容错**：失败瓦片按指数退避重试（1s 起、封顶 30s、默认 3 次），瞬时网络错误不再导致该瓦片本次会话永久缺失。
+- **缓存版本戳**：瓦片 URL 带自身内容哈希 `?sha=<tile.sha1>`，未变动的瓦片跨地图版本继续命中 7 天强缓存（用全图聚合 version 会让任一片变动即全量失效）。
+- **共享图集**：hires 每瓦片内嵌同一张图集 PNG，前端按清单 `atlas` 只解码一次；LOD 每层把该层全部瓦片的航拍色图拼成一张 `lod-atlas.png`（瓦片 UV 已烘焙成图集坐标），前端每层只解码一张纹理——此前 LOD 是每瓦片一张 128² PNG，2176 片即 2000+ 纹理对象与同等数量的解码。hires / LOD 由传入的 `level` 显式区分，不从纹理过滤参数反推。
 - **浮点原点**：超远坐标（边疆量级）自动重定基，场景 / 相机 / 控制器目标同步平移，防 float32 精度撕裂。
 
 ## 路线图
@@ -161,9 +228,9 @@ pnpm -r build                       # 全部包 + 应用构建
 | Phase 2 | 光照 + AO 烘焙、流体、生物群系染色、图集无损打包 | ✅ 已完成 |
 | Phase 3 | LOD 金字塔 + 前端四叉树逐级切换 / LRU 缓存 | ✅ 已完成 |
 | Phase 4 | 全版本兼容（版本适配 SPI、1.13–1.17 调色板 + 1.12 flattening 映射、多版本回归测试） | ✅ 已完成 |
-| Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底 + bake 链路优先消费采集产物） | ✅ 已完成 |
+| Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底 + bake 链路优先消费采集产物） | ✅ 已完成（采集有仓库内入口 `harvestModels`，mod jar 走 `-Pmods`） |
 | Phase 6 | 规模化与增量：管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选量化 + 增量 bake→tile→lod + 图集复用 + 高度场合并 | ✅ 已完成（meshopt 熵编码见 Phase 7；十万级全量烘焙仍走 jshell） |
-| Phase 7 | 打磨与扩展：meshopt 熵编码、Y 轴切片、标注渲染（marker 渲染器）、增量扩图集、分布式分片作业队列、S3 侧 Watch 等价物、仓库内全量管线入口 | 🚧 规划中 |
+| Phase 7 | 打磨与扩展：meshopt 熵编码、Y 轴切片、标注渲染（marker 渲染器）、增量扩图集、分布式分片作业队列、S3 侧 Watch 等价物、仓库内全量管线入口 | 🚧 进行中（LOD 按层图集页、仓库内管线入口的**采集段** `harvestModels` 已落地；其余待做） |
 
 ## 文档
 

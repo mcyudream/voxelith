@@ -60,6 +60,9 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
+    /** 下载地址安全策略：仅 http/https，拒绝本机/私有/保留地址（见 {@link DownloadUrlPolicy}）。 */
+    private final DownloadUrlPolicy urlPolicy = new DownloadUrlPolicy();
+
     @Override
     public ProvisionedRuntime provision(RuntimeSpec spec, Path cacheDir) {
         if (spec.loader() != LoaderKind.FABRIC) {
@@ -160,7 +163,7 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
                 ? artifact.get("url").getAsString()
                 : LAUNCHER_META_LIBRARIES + path;
         String sha1 = artifact.has("sha1") ? artifact.get("sha1").getAsString() : null;
-        Path target = mojangRoot.resolve("libraries").resolve(path);
+        Path target = underRoot(mojangRoot.resolve("libraries"), path);
         download(url, target, sha1);
         return target;
     }
@@ -203,10 +206,11 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
     private Path downloadFabricLoader(String loaderVersion, Path fabricRoot, List<Path> libraries)
             throws IOException, InterruptedException {
         String base = "net/fabricmc/fabric-loader/" + loaderVersion + "/";
-        Path lwJsonPath = fabricRoot.resolve(base + "fabric-loader-" + loaderVersion + "-launchwrapper.json");
+        Path lwJsonPath = underRoot(fabricRoot,
+                base + "fabric-loader-" + loaderVersion + "-launchwrapper.json");
         download(FABRIC_MAVEN + base + "fabric-loader-" + loaderVersion + "-launchwrapper.json", lwJsonPath, null);
 
-        Path loaderJar = fabricRoot.resolve(base + "fabric-loader-" + loaderVersion + ".jar");
+        Path loaderJar = underRoot(fabricRoot, base + "fabric-loader-" + loaderVersion + ".jar");
         download(FABRIC_MAVEN + base + "fabric-loader-" + loaderVersion + ".jar", loaderJar, null);
 
         JsonObject lw = JsonParser.parseString(Files.readString(lwJsonPath)).getAsJsonObject();
@@ -221,7 +225,7 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
                 }
                 String path = mavenPath(coords);
                 String sha1 = dep.has("sha1") ? dep.get("sha1").getAsString() : null;
-                Path target = fabricRoot.resolve(path);
+                Path target = underRoot(fabricRoot, path);
                 String preferred = dep.has("url") ? dep.get("url").getAsString() : MAVEN_CENTRAL;
                 downloadFirstReachable(new String[]{preferred, LAUNCHER_META_LIBRARIES, MAVEN_CENTRAL},
                         path, target, sha1);
@@ -235,7 +239,7 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
             throws IOException, InterruptedException {
         String path = "net/fabricmc/intermediary/" + mcVersion
                 + "/intermediary-" + mcVersion + "-v2.jar";
-        Path target = fabricRoot.resolve(path);
+        Path target = underRoot(fabricRoot, path);
         download(FABRIC_MAVEN + path, target, null);
         return target;
     }
@@ -277,7 +281,8 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
         String version = latestFabricApi(mcVersion, fabricRoot);
         String path = "net/fabricmc/fabric-api/fabric-api/" + version
                 + "/fabric-api-" + version + ".jar";
-        Path target = fabricRoot.resolve(path);
+        // version 来自 Maven 元数据 XML（远端可控），同样做落盘包含校验
+        Path target = underRoot(fabricRoot, path);
         download(FABRIC_MAVEN + path, target, null);
         return target;
     }
@@ -359,8 +364,10 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
         if (Files.isRegularFile(target) && (sha1 == null || sha1.equals(sha1Of(target)))) {
             return;
         }
+        // 发请求前校验：URL 可能来自 piston-meta / Maven 元数据（远端可控）
+        URI uri = urlPolicy.validate(url);
         Files.createDirectories(target.getParent());
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+        HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofMinutes(10))
                 .GET()
                 .build();
@@ -375,6 +382,20 @@ public final class HttpRuntimeProvisioner implements RuntimeProvisioner {
             throw new IOException("sha1 校验失败: " + url);
         }
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /**
+     * 相对路径落盘定位：解析后必须仍在 root 之内。
+     * version json 的 {@code artifact.path} 与 Maven 元数据里的版本号都是远端可控数据，
+     * 不校验就能用 {@code ../../} 把文件写到缓存目录之外。
+     */
+    private static Path underRoot(Path root, String relative) {
+        Path normalizedRoot = root.normalize();
+        Path resolved = normalizedRoot.resolve(relative).normalize();
+        if (!resolved.startsWith(normalizedRoot)) {
+            throw new IllegalArgumentException("下载路径越界，拒绝写入缓存之外: " + relative);
+        }
+        return resolved;
     }
 
     private static String sha1Of(Path file) throws IOException {

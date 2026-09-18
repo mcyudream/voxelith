@@ -34,6 +34,22 @@ export function initialViewDistanceChunks(tier: DeviceTier): number {
   return tier === "high" ? 24 : tier === "mid" ? 16 : 10;
 }
 
+/**
+ * 三档瓦片缓存上限（数量 + 字节）。低档设备/移动端按比例收紧：
+ * 缓存按瓦片数封顶时，弱 GPU 的显存与内存率先耗尽，而首屏并不会因此变慢
+ * （期望集合内的瓦片受 LRU 保护，不会刚加载就被淘汰）。
+ */
+export function cacheLimitsForTier(tier: DeviceTier): { maxLoaded: number; maxBytes: number } {
+  switch (tier) {
+    case "high":
+      return { maxLoaded: 4096, maxBytes: 2 * 1024 * 1024 * 1024 };
+    case "mid":
+      return { maxLoaded: 2048, maxBytes: 1024 * 1024 * 1024 };
+    default:
+      return { maxLoaded: 1024, maxBytes: 512 * 1024 * 1024 };
+  }
+}
+
 /** GPU 型号启发式打分：0 软件渲染/入门，1 中端/未知，2 高端独显或旗舰移动 GPU。 */
 export function scoreGpu(renderer: string): 0 | 1 | 2 {
   const r = renderer.toLowerCase();

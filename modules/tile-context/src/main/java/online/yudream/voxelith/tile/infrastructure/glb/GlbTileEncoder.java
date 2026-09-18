@@ -58,9 +58,12 @@ public final class GlbTileEncoder implements TileEncoder {
     public byte[] encode(TileGeometry geometry, byte[] atlasPng, EncodeOptions options) {
         boolean quantize = options != null && options.quantize();
         boolean linearFilter = options != null && options.linearFilter();
+        boolean embedImage = options == null || options.embedImage();
+        // 不内嵌时 PNG 完全不进 BIN（这正是省掉每片 1.7MB 的那一步）
+        byte[] embeddedPng = embedImage ? atlasPng : null;
         float posScale = quantize ? positionMaxAbs(geometry) : 1f;
-        byte[] bin = buildBin(geometry, atlasPng, quantize, posScale);
-        byte[] json = gson.toJson(buildJson(geometry, atlasPng, quantize, posScale, linearFilter))
+        byte[] bin = buildBin(geometry, embeddedPng, quantize, posScale);
+        byte[] json = gson.toJson(buildJson(geometry, embeddedPng, quantize, posScale, linearFilter))
                 .getBytes(StandardCharsets.UTF_8);
 
         int jsonPadded = pad4(json.length);
@@ -115,8 +118,12 @@ public final class GlbTileEncoder implements TileEncoder {
 
     private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale,
                                  boolean linearFilter) {
-        boolean textured = atlasPng != null;
-        int pngBytes = textured ? atlasPng.length : 0;
+        // textured：材质按纹理瓦片输出（MASK 裁剪）。共享图集模式下没有内嵌图，但 UV 仍在，
+        // 贴图由前端按清单挂上——所以「是否纹理瓦片」与「是否内嵌图」必须分开判断。
+        boolean hasImage = atlasPng != null;
+        boolean textured = hasImage || geometry.opaque().uvs().length > 0
+                || geometry.translucent().uvs().length > 0;
+        int pngBytes = hasImage ? atlasPng.length : 0;
         JsonObject root = new JsonObject();
         JsonObject asset = new JsonObject();
         asset.addProperty("version", "2.0");
@@ -138,7 +145,7 @@ public final class GlbTileEncoder implements TileEncoder {
         if (!geometry.translucent().isEmpty()) {
             offset = appendSegment(bufferViews, accessors, primitives, geometry.translucent(), offset, 1, quantize, posScale);
         }
-        if (textured) {
+        if (hasImage) {
             bufferViews.add(bufferView(offset, pngBytes, 0));
             int pngViewIndex = bufferViews.size() - 1;
 
@@ -178,9 +185,9 @@ public final class GlbTileEncoder implements TileEncoder {
         root.add("buffers", buffers);
 
         JsonArray materials = new JsonArray();
-        materials.add(material(textured ? "MASK" : "OPAQUE", 1f, textured));
+        materials.add(material(textured ? "MASK" : "OPAQUE", 1f, hasImage));
         if (!geometry.translucent().isEmpty()) {
-            materials.add(material("BLEND", WATER_ALPHA, textured));
+            materials.add(material("BLEND", WATER_ALPHA, hasImage));
         }
         root.add("materials", materials);
 

@@ -52,7 +52,9 @@ public final class DiskTileIndexer {
             textureCount = Math.max(1, layout.cellIndex().size());
         }
         return new TileOutcome(summaries, tilesDir.resolve("atlas.png"),
-                tilesDir.resolve("tile-report.json"), textureCount, atlasSize);
+                tilesDir.resolve("tile-report.json"), textureCount, atlasSize,
+                // 索引已有产物时无从得知当时的缺贴图情况（图集已经烤好了）
+                List.of(), 0);
     }
 
     private static void indexTree(Path root, List<TileOutcome.TileSummary> summaries, boolean hires) {

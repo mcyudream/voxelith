@@ -81,7 +81,9 @@ public final class ProcessRuntimeWorkerLauncher implements RuntimeWorkerLauncher
             command.add(classpathString(runtime));
             command.add(WORKER_MAIN_CLASS);
             command.add("--spec");
-            command.add(spec.workDir().resolve(WorkerProtocol.SPEC_FILE).toString());
+            // 必须传绝对路径：子进程的 cwd 会被设成 workDir，相对路径会被它再拼一次 cwd
+            // （相对 workDir 时表现为读不到 spec → 退出码 3 且报告缺失）
+            command.add(spec.workDir().resolve(WorkerProtocol.SPEC_FILE).toAbsolutePath().normalize().toString());
 
             Process process = new ProcessBuilder(command)
                     .directory(spec.workDir().toFile())

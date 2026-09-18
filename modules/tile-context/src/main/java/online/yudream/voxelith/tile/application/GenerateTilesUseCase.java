@@ -4,12 +4,12 @@ import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
 import online.yudream.voxelith.bake.application.dto.BakedQuadData;
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
 import online.yudream.voxelith.sharedkernel.vo.Identifier;
+import online.yudream.voxelith.sharedkernel.vo.MissingTexture;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.domain.atlas.AtlasLayout;
 import online.yudream.voxelith.tile.domain.atlas.AtlasPacker;
 import online.yudream.voxelith.tile.domain.atlas.AtlasPacker.AtlasResult;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
-import online.yudream.voxelith.tile.domain.atlas.ImageCodec;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
 import online.yudream.voxelith.tile.domain.tile.TileEncoder;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry;
@@ -20,10 +20,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -32,7 +34,8 @@ import java.util.TreeSet;
 public class GenerateTilesUseCase {
 
     /** 缺失贴图的品红兜底（固定占图集第 0 格，与 AtlasLayout 缺失映射 (0,0) 对齐）。 */
-    private static final Identifier FALLBACK_TEXTURE = new Identifier("yudream", "block/_missing");
+    private static final Identifier FALLBACK_TEXTURE =
+            Identifier.parse(MissingTexture.ID);
 
     private final TexturePixelSource pixelSource;
     private final ImageCodec imageCodec;
@@ -56,21 +59,32 @@ public class GenerateTilesUseCase {
         int textureCount;
         int atlasSize;
         Path atlasFile;
+        List<String> missingTextures;
+        int untexturedQuads;
         if (reused != null) {
             layout = reused.layout();
             atlasPng = reused.png();
             textureCount = layout.cellIndex().size();
             atlasSize = layout.pixelSize();
             atlasFile = sink.writeAtlas(command.outputDir(), atlasPng);
+            Unmapped unmapped = countUnmapped(layout, command.meshes());
+            missingTextures = unmapped.missing();
+            untexturedQuads = unmapped.untextured();
         } else {
-            AtlasResult atlas = packAtlas(command.meshes());
+            AtlasBuild build = packAtlas(command.meshes());
+            AtlasResult atlas = build.atlas();
             layout = atlas.layout();
             atlasPng = imageCodec.encodePng(atlas.pixelSize(), atlas.pixelSize(), atlas.argb());
             textureCount = layout.cellIndex().size();
             atlasSize = atlas.pixelSize();
             atlasFile = sink.writeAtlas(command.outputDir(), atlasPng);
             sink.writeAtlasLayout(command.outputDir(), layout);
+            missingTextures = build.missing();
+            untexturedQuads = build.untexturedQuads();
         }
+
+        // 共享图集模式：atlas.png 仍然落盘（清单要引用），但瓦片 glb 不再内嵌它
+        byte[] embeddedPng = command.encode().embedImage() ? atlasPng : null;
 
         TileMeshAssembler assembler = new TileMeshAssembler();
         List<TileOutcome.TileSummary> summaries = new ArrayList<>();
@@ -80,7 +94,7 @@ public class GenerateTilesUseCase {
             }
             TileGeometry geometry = assembler.assemble(
                     tile.getKey().x(), tile.getKey().z(), tile.getValue(), layout);
-            byte[] glb = tileEncoder.encode(geometry, atlasPng, command.encode());
+            byte[] glb = tileEncoder.encode(geometry, embeddedPng, command.encode());
             sink.writeTile(command.outputDir(), tile.getKey(), glb);
             summaries.add(new TileOutcome.TileSummary(
                     tile.getKey(), geometry.quadCount(), geometry.vertexCount(), glb.length, sha1(glb),
@@ -88,25 +102,88 @@ public class GenerateTilesUseCase {
         }
 
         Path reportFile = sink.writeReport(command.outputDir(), summaries, textureCount, atlasSize);
-        return new TileOutcome(summaries, atlasFile, reportFile, textureCount, atlasSize);
+        return new TileOutcome(summaries, atlasFile, reportFile, textureCount, atlasSize,
+                missingTextures, untexturedQuads);
     }
 
-    private AtlasResult packAtlas(Map<ChunkPos, BakedChunkMeshData> meshes) {
+    /**
+     * 打包图集，并顺手记下两类「会变成品红」的面：
+     * 引用了资源包里没有的贴图（多半是资源包与世界版本不匹配）、以及压根没有贴图 id 的面。
+     */
+    private AtlasBuild packAtlas(Map<ChunkPos, BakedChunkMeshData> meshes) {
         TreeSet<String> used = new TreeSet<>();
+        int untexturedQuads = 0;
         for (BakedChunkMeshData mesh : meshes.values()) {
             for (BakedQuadData quad : mesh.quads()) {
-                used.add(quad.texture());
+                String texture = quad.texture();
+                // 无贴图的面（部分 mod 模型）不参与图集：不加进 used，其 UV 由
+                // AtlasLayout.mapUv 的「未知 id」分支落到第 0 格兜底贴图（品红/黑棋盘格）
+                if (texture == null || MissingTexture.ID.equals(texture)) {
+                    untexturedQuads++;
+                    continue;
+                }
+                used.add(texture);
             }
         }
 
         List<AtlasTexture> textures = new ArrayList<>();
         textures.add(fallbackTexture());
+        List<String> missing = new ArrayList<>();
         for (String id : used) {
             Identifier identifier = Identifier.parse(id);
             Optional<AtlasTexture> loaded = pixelSource.load(identifier);
+            if (loaded.isEmpty()) {
+                missing.add(id);
+            }
             textures.add(loaded.orElseGet(() -> blank(identifier)));
         }
-        return new AtlasPacker().pack(textures);
+        return new AtlasBuild(new AtlasPacker().pack(textures), List.copyOf(missing), untexturedQuads);
+    }
+
+    private record AtlasBuild(AtlasResult atlas, List<String> missing, int untexturedQuads) {
+    }
+
+    /**
+     * 预打一张共享图集并落盘（多遍渲染用）。
+     *
+     * <p>多遍渲染必须让每一批用**同一张**图集：瓦片里的 UV 是按布局算的，各批各打一张的话，
+     * 先落盘的瓦片在新布局下会整体错位/错色。贴图集合由调用方给（采集产物的贴图全表 + 地图画 id），
+     * 是实际用量的超集——多打一些格子换取跨批布局稳定。</p>
+     *
+     * @return 各批复用的图集（布局 + png）
+     */
+    public AtlasReuse packSharedAtlas(Path outputDir, Collection<String> textureIds) {
+        List<AtlasTexture> textures = new ArrayList<>();
+        textures.add(fallbackTexture());
+        for (String id : new TreeSet<>(textureIds)) {
+            Identifier identifier = Identifier.parse(id);
+            textures.add(pixelSource.load(identifier).orElseGet(() -> blank(identifier)));
+        }
+        AtlasResult result = new AtlasPacker().pack(textures);
+        byte[] png = imageCodec.encodePng(result.pixelSize(), result.pixelSize(), result.argb());
+        sink.writeAtlas(outputDir, png);
+        sink.writeAtlasLayout(outputDir, result.layout());
+        return new AtlasReuse(result.layout(), png);
+    }
+
+    /** 复用图集时统计两类会渲染成兜底格的面：贴图不在图集里、以及压根没有贴图 id。 */
+    private static Unmapped countUnmapped(AtlasLayout layout, Map<ChunkPos, BakedChunkMeshData> meshes) {
+        Set<String> missing = new TreeSet<>();
+        int untextured = 0;
+        for (BakedChunkMeshData mesh : meshes.values()) {
+            for (BakedQuadData quad : mesh.quads()) {
+                String texture = quad.texture();
+                if (texture == null || MissingTexture.ID.equals(texture)) {
+                    untextured++;
+                } else if (!layout.cellIndex().containsKey(texture)) {
+                    missing.add(texture);
+                }
+            }
+        }
+        return new Unmapped(List.copyOf(missing), untextured);
+    }
+
+    private record Unmapped(List<String> missing, int untextured) {
     }
 
     private static AtlasTexture fallbackTexture() {

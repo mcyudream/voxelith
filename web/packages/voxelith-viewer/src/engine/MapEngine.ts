@@ -16,13 +16,16 @@ export interface MapEngineOptions {
 
 export { supportsDisplayP3 };
 
+/** 每帧更新钩子：dtSeconds 已截断（移动积分），rawDtSeconds 为真实间隔（FPS 统计）。 */
+export type FrameHook = (dtSeconds: number, rawDtSeconds: number) => void;
+
 export class MapEngine {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
 
   private readonly resizeObserver: ResizeObserver;
-  private readonly frameHooks = new Set<(dtSeconds: number) => void>();
+  private readonly frameHooks = new Set<FrameHook>();
   private lastFrameTime = performance.now();
   private disposed = false;
   private displayP3: boolean;
@@ -59,12 +62,18 @@ export class MapEngine {
     });
   }
 
-  /** 注册每帧更新钩子（如 FreeFlightControls.update、TileManager.update）。 */
-  addFrameHook(hook: (dtSeconds: number) => void): void {
+  /**
+   * 注册每帧更新钩子（如 FreeFlightControls.update、TileManager.update）。
+   *
+   * @param hook 收到两个时间步：`dtSeconds` 已把超长帧截到 0.1s（供相机/移动积分，
+   *   避免切回标签页时一帧瞬移），`rawDtSeconds` 是真实间隔（供 FPS 统计，
+   *   否则低帧率下 elapsed 被人为压缩、测得的帧率会偏高）。
+   */
+  addFrameHook(hook: (dtSeconds: number, rawDtSeconds: number) => void): void {
     this.frameHooks.add(hook);
   }
 
-  removeFrameHook(hook: (dtSeconds: number) => void): void {
+  removeFrameHook(hook: (dtSeconds: number, rawDtSeconds: number) => void): void {
     this.frameHooks.delete(hook);
   }
 
@@ -92,10 +101,11 @@ export class MapEngine {
 
   render(): void {
     const now = performance.now();
-    const dt = Math.min((now - this.lastFrameTime) / 1000, 0.1);
+    const rawDt = (now - this.lastFrameTime) / 1000;
+    const dt = Math.min(rawDt, 0.1);
     this.lastFrameTime = now;
     for (const hook of this.frameHooks) {
-      hook(dt);
+      hook(dt, rawDt);
     }
     this.renderer.render(this.scene, this.camera);
   }

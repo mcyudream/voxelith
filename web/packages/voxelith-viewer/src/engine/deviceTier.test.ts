@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { computeTier, initialViewDistanceChunks, scoreGpu } from "./deviceTier.js";
+import {
+  cacheLimitsForTier,
+  computeTier,
+  initialViewDistanceChunks,
+  scoreGpu,
+} from "./deviceTier.js";
 
 describe("scoreGpu", () => {
   it("软件渲染与入门 GPU 记 0 分", () => {
@@ -58,5 +63,24 @@ describe("initialViewDistanceChunks", () => {
     expect(initialViewDistanceChunks("high")).toBe(24);
     expect(initialViewDistanceChunks("mid")).toBe(16);
     expect(initialViewDistanceChunks("low")).toBe(10);
+  });
+});
+
+describe("cacheLimitsForTier", () => {
+  it("档位越低缓存上限越小", () => {
+    const high = cacheLimitsForTier("high");
+    const mid = cacheLimitsForTier("mid");
+    const low = cacheLimitsForTier("low");
+    expect(high.maxLoaded).toBeGreaterThan(mid.maxLoaded);
+    expect(mid.maxLoaded).toBeGreaterThan(low.maxLoaded);
+    expect(high.maxBytes).toBeGreaterThan(mid.maxBytes);
+    expect(mid.maxBytes).toBeGreaterThan(low.maxBytes);
+  });
+
+  it("高档沿用原有默认（4096 片 / 2GB）", () => {
+    expect(cacheLimitsForTier("high")).toEqual({
+      maxLoaded: 4096,
+      maxBytes: 2 * 1024 * 1024 * 1024,
+    });
   });
 });

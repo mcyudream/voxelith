@@ -89,4 +89,21 @@ describe("AdaptiveDistance", () => {
     for (let i = 0; i < 200; i++) a.update(0.05);
     expect(a.chunks).toBe(16);
   });
+
+  it("FPS 用未截断的真实帧间隔统计", () => {
+    const { stub } = stubTileManager();
+    // 真实 4fps（每帧 250ms），时间步被 MapEngine 截到 0.1s；目标 5fps。
+    // 用真实间隔：窗口 500ms 收口时 fps=4 < 5×0.85=4.25 → 缩视距。
+    // 若误用截断值：同样两帧只累计 200ms 窗口未收口，5 帧后算得 fps=10 > 5×0.97，
+    // 反而会放大视距——低帧率下的判据方向整个反过来。
+    const a = new AdaptiveDistance({
+      tileManager: stub,
+      initialChunks: 16,
+      targetFps: 5,
+      windowMs: 500,
+    });
+    a.update(0.1, 0.25);
+    a.update(0.1, 0.25);
+    expect(a.chunks).toBeLessThan(16);
+  });
 });

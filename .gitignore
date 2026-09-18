@@ -34,6 +34,7 @@ Thumbs.db
 .env.*
 !.env.example
 .zcode/
+.mimosa/
 
 # ---- 本机缓存（MC 客户端 jar 等大文件）----
 .cache/

@@ -7,6 +7,7 @@ import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
 import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
+import online.yudream.voxelith.tile.application.TileArtifactSink;
 import online.yudream.voxelith.tile.application.TileOutcome;
 import online.yudream.voxelith.tile.application.VertexColorTileExporter;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
@@ -37,24 +38,41 @@ class GenerateLodPyramidUseCaseTest {
         }
     }
 
+    /** 记录落盘调用的 sink 桩：瓦片 glb 由 encoder 记录，LOD 图集页在此记录。 */
+    private static final class RecordingSink implements TileArtifactSink {
+        final List<Integer> lodAtlasLevels = new ArrayList<>();
+        final List<byte[]> lodAtlasPngs = new ArrayList<>();
+
+        @Override
+        public Path writeTile(Path outputDir, TilePos pos, byte[] glb) {
+            return outputDir.resolve("tile.glb");
+        }
+
+        @Override
+        public Path writeAtlas(Path outputDir, byte[] png) {
+            return outputDir.resolve("atlas.png");
+        }
+
+        @Override
+        public String writeLodAtlas(Path outputDir, int level, byte[] png) {
+            lodAtlasLevels.add(level);
+            lodAtlasPngs.add(png);
+            return TileArtifactSink.lodAtlasUrl(level);
+        }
+
+        @Override
+        public Path writeReport(Path outputDir, List<TileOutcome.TileSummary> tiles,
+                                int textureCount, int atlasSize) {
+            return outputDir.resolve("report.json");
+        }
+    }
+
     private static VertexColorTileExporter exporter(RecordingEncoder encoder) {
-        return new VertexColorTileExporter(encoder, new online.yudream.voxelith.tile.application.TileArtifactSink() {
-            @Override
-            public Path writeTile(Path outputDir, TilePos pos, byte[] glb) {
-                return outputDir.resolve("tile.glb");
-            }
+        return exporter(encoder, new RecordingSink());
+    }
 
-            @Override
-            public Path writeAtlas(Path outputDir, byte[] png) {
-                return outputDir.resolve("atlas.png");
-            }
-
-            @Override
-            public Path writeReport(Path outputDir, List<TileOutcome.TileSummary> tiles,
-                                    int textureCount, int atlasSize) {
-                return outputDir.resolve("report.json");
-            }
-        });
+    private static VertexColorTileExporter exporter(RecordingEncoder encoder, RecordingSink sink) {
+        return new VertexColorTileExporter(encoder, sink);
     }
 
     /** 均色 0x808080 的贴图源（含一个全透明像素验证 alpha 过滤）；未知贴图返回空。 */
@@ -194,19 +212,96 @@ class GenerateLodPyramidUseCaseTest {
     }
 
     @Test
-    void embedsAerialColormapWhenImageCodecPresent() {
+    void fullRunPacksColormapsIntoLevelAtlasPageInsteadOfEmbeddingPerTile() {
         RecordingEncoder encoder = new RecordingEncoder();
+        RecordingSink sink = new RecordingSink();
         GenerateLodPyramidUseCase useCase = new GenerateLodPyramidUseCase(
-                graySampler(), exporter(encoder), (w, h, argb) -> new byte[]{(byte) 0x89, 'P'});
+                graySampler(), exporter(encoder, sink), (w, h, argb) -> new byte[]{(byte) 0x89, 'P'});
 
-        useCase.generate(new LodCommand(meshes(
+        LodOutcome outcome = useCase.generate(new LodCommand(meshes(
                 quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)
         ), Path.of("build/lod-test"), 0));
 
-        assertThat(encoder.atlases.getFirst()).isNotNull();
-        assertThat(encoder.geometries.getFirst().opaque().uvs()).isNotEmpty();
-        assertThat(topFaceColors(encoder.geometries.getFirst()))
+        // 该层只写一页图集，不再逐瓦片内嵌 PNG
+        assertThat(sink.lodAtlasLevels).containsExactly(1);
+        assertThat(encoder.atlases.getFirst()).isNull();
+        assertThat(outcome.atlasPages()).hasSize(1);
+        assertThat(outcome.atlasPages().getFirst().level()).isEqualTo(1);
+        assertThat(outcome.atlasPages().getFirst().url()).isEqualTo("tiles/lod/1/lod-atlas.png");
+        // 单瓦片网格：槽位 64（L1 基础值，整页 64×64 未触及 4096 上限）
+        assertThat(outcome.atlasPages().getFirst().slotSize()).isEqualTo(64);
+        assertThat(outcome.atlasPages().getFirst().sha1()).isNotBlank();
+
+        // 顶点 UV 已重映射进图集槽位：落在 UV 矩形内，且不再从 0 起（证明做了重映射）
+        TileGeometry geometry = encoder.geometries.getFirst();
+        float[] uvs = geometry.opaque().uvs();
+        assertThat(uvs).isNotEmpty();
+        float inset = 0.5f / 64f;
+        for (int v = 0; v < uvs.length; v += 2) {
+            assertThat(uvs[v]).isBetween(inset, 1f - inset);
+            assertThat(uvs[v + 1]).isBetween(inset, 1f - inset);
+        }
+        // 有色图时 COLOR_0 只承载方向明暗
+        assertThat(topFaceColors(geometry))
                 .allSatisfy(c -> assertThat(c).containsExactly(255, 255, 255));
+    }
+
+    @Test
+    void incrementalRunKeepsPerTileEmbeddedColormapAndEmitsNoAtlasPage() {
+        RecordingEncoder encoder = new RecordingEncoder();
+        RecordingSink sink = new RecordingSink();
+        GenerateLodPyramidUseCase useCase = new GenerateLodPyramidUseCase(
+                graySampler(), exporter(encoder, sink), (w, h, argb) -> new byte[]{(byte) 0x89, 'P'});
+        InMemoryHeightfieldStore store = new InMemoryHeightfieldStore();
+
+        // 增量：手上只有被替换 region 的栅格，重拼整页会抹掉其余区域 → 不能出图集页
+        LodOutcome incremental = useCase.generate(new LodCommand(
+                meshes(quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)),
+                Path.of("build/lod-test"), 0, store, List.of(new RegionPos(0, 0))));
+
+        assertThat(sink.lodAtlasLevels).isEmpty();
+        assertThat(incremental.atlasPages()).isEmpty();
+        // 退回逐瓦片内嵌色图（尺寸为 AerialRaster.TILE_TEXTURE_SIZE）
+        assertThat(encoder.atlases.getFirst()).isNotNull();
+    }
+
+    @Test
+    void siblingTilesLandInDisjointAtlasSlots() {
+        RecordingEncoder encoder = new RecordingEncoder();
+        RecordingSink sink = new RecordingSink();
+        GenerateLodPyramidUseCase useCase = new GenerateLodPyramidUseCase(
+                graySampler(), exporter(encoder, sink), (w, h, argb) -> new byte[]{(byte) 0x89, 'P'});
+
+        // 两片相邻的 L1 瓦片（覆盖 64 方块/片）：x=0 → tx 0，x=100 → tx 1
+        LodOutcome outcome = useCase.generate(new LodCommand(meshes(
+                quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1),
+                quad(100, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1)
+        ), Path.of("build/lod-test"), 1));
+
+        assertThat(outcome.tiles().stream().map(t -> t.pos().x()).distinct().sorted())
+                .containsExactly(0, 1);
+        assertThat(sink.lodAtlasLevels).containsExactly(1);
+
+        // 两片瓦片的 u 区间必须互不重叠：否则相邻瓦片会采到对方色图（串色）
+        float[] first = encoder.geometries.get(0).opaque().uvs();
+        float[] second = encoder.geometries.get(1).opaque().uvs();
+        assertThat(maxOf(first, 0)).isLessThan(minOf(second, 0));
+    }
+
+    private static float minOf(float[] uvs, int offset) {
+        float min = Float.MAX_VALUE;
+        for (int i = offset; i < uvs.length; i += 2) {
+            min = Math.min(min, uvs[i]);
+        }
+        return min;
+    }
+
+    private static float maxOf(float[] uvs, int offset) {
+        float max = -Float.MAX_VALUE;
+        for (int i = offset; i < uvs.length; i += 2) {
+            max = Math.max(max, uvs[i]);
+        }
+        return max;
     }
 
     private static final class InMemoryHeightfieldStore

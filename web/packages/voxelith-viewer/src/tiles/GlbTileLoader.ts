@@ -11,6 +11,9 @@
  *   坏数据直接抛错进 TileManager 的 failed 集合，绝不允许带病进场景。
  * - hires 瓦片逐瓦片内嵌同一张图集 PNG；传入 sharedAtlas 时用共享纹理替换，
  *   内嵌副本立即 dispose —— 否则每帧几百张重复图集纹理会把显存耗尽。
+ * - hires / LOD 由调用方显式传入的 level 区分，绝不从纹理过滤参数反推：
+ *   着色器 sampler 状态会随 glb 编码细节漂移，一旦 LOD 被当成 hires，
+ *   它的 0..1 全幅 UV 会去采样整张方块图集，整片变成红/青色块。
  */
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -116,9 +119,14 @@ export interface GlbTileLoaderOptions {
   /**
    * hires 共享图集纹理：替换每瓦片内嵌的图集副本（每个 hires glb 都内嵌同一张
    * 图集 PNG，GLTFLoader 会逐瓦片解码出独立 GPU 纹理，显存随加载数线性增长）。
-   * 必须按 {@link configureHiresAtlas} 配置；LOD 航拍色图逐瓦片不同，不受影响。
+   * 必须按 {@link configureHiresAtlas} 配置；LOD 层不受影响。
    */
   sharedAtlas?: THREE.Texture;
+  /**
+   * LOD 每层共享图集页（level → 纹理）。全量生成的 LOD 瓦片不含内嵌色图，
+   * 其 UV 已烘焙成该层的图集坐标，纹理只能由这里提供。
+   */
+  lodAtlases?: ReadonlyMap<number, THREE.Texture>;
 }
 
 /**
@@ -151,9 +159,62 @@ export function configureLodColormap(texture: THREE.Texture): THREE.Texture {
   return texture;
 }
 
+/**
+ * 按层级决定 hires 瓦片的漫反射贴图用哪张，并返回实际应挂到材质上的纹理。
+ *
+ * 判据只能是调用方传入的 `lod`，不能从纹理 sampler 状态反推：一旦 LOD 被判成 hires，
+ * 它的 0..1 全幅 UV 会去采样整张方块图集，整片渲染成红/青色块。
+ *
+ * @param embedded    glb 内嵌纹理（共享图集模式下为 null）
+ * @param lod         true = LOD 层（level > 0）
+ * @param sharedAtlas hires 共享图集；为 undefined 时就地按图集参数配置内嵌副本
+ * @returns 与原内嵌纹理不同时，调用方负责释放内嵌副本
+ */
+export function resolveTileTexture(
+  embedded: THREE.Texture | null,
+  lod: boolean,
+  sharedAtlas?: THREE.Texture,
+): THREE.Texture | null {
+  if (lod) {
+    return embedded ? configureLodColormap(embedded) : null;
+  }
+  // hires：清单声明了共享图集就用它。瓦片可能内嵌了一份图集副本（旧格式），
+  // 也可能只带 UV 不内嵌（共享图集模式）——两种情况都换成共享那张。
+  if (sharedAtlas) {
+    return sharedAtlas;
+  }
+  return embedded ? configureHiresAtlas(embedded) : null;
+}
+
+/**
+ * LOD 瓦片的漫反射贴图选择。
+ *
+ * 优先级：**内嵌色图 > 该层图集页**。两种瓦片共存于同一张地图：
+ * - 全量生成的瓦片不内嵌 PNG，UV 已烘焙成图集坐标 → 用该层图集页；
+ * - 增量重跑或旧格式的瓦片内嵌自己的 128² 色图，UV 是瓦片局部 0..1
+ *   → 必须保留内嵌色图，否则会拿局部 UV 去采整页图集（乱色）。
+ *
+ * @param embedded glb 内嵌纹理（无则 null）
+ * @param atlas    该层图集页纹理（清单未声明该层则 undefined）
+ * @returns 应挂到材质上的纹理；两者都没有时返回 null（仅方向明暗）
+ */
+export function resolveLodTexture(
+  embedded: THREE.Texture | null,
+  atlas?: THREE.Texture,
+): THREE.Texture | null {
+  if (embedded) {
+    return configureLodColormap(embedded);
+  }
+  if (atlas) {
+    return configureLodColormap(atlas);
+  }
+  return null;
+}
+
 export class GlbTileLoader {
   private readonly loader = new GLTFLoader();
   private readonly sharedAtlas?: THREE.Texture;
+  private readonly lodAtlases: ReadonlyMap<number, THREE.Texture>;
 
   constructor(options: GlbTileLoaderOptions = {}) {
     this.sharedAtlas = options.sharedAtlas;
@@ -161,9 +222,21 @@ export class GlbTileLoader {
       configureHiresAtlas(this.sharedAtlas);
       this.sharedAtlas.userData[SHARED_TEXTURE_KEY] = true;
     }
+    this.lodAtlases = options.lodAtlases ?? new Map();
+    for (const atlas of this.lodAtlases.values()) {
+      configureLodColormap(atlas);
+      atlas.userData[SHARED_TEXTURE_KEY] = true;
+    }
   }
 
-  async load(url: string): Promise<THREE.Group> {
+  /**
+   * 加载并归一化一个瓦片。
+   *
+   * @param url   瓦片地址（含缓存版本戳）
+   * @param level LOD 层级：0 = hires（内嵌共享图集副本），>0 = LOD（内嵌色图或层级图集页）。
+   *              必传：hires/LOD 的纹理处理不同，靠猜会整片渲染错色。
+   */
+  async load(url: string, level: number): Promise<THREE.Group> {
     const gltf = await this.loader.loadAsync(url);
     const root = gltf.scene;
     validateTileGroup(root, url);
@@ -171,7 +244,7 @@ export class GlbTileLoader {
     const replaced = new Set<THREE.Texture>();
     root.traverse((node) => {
       if (node instanceof THREE.Mesh) {
-        node.material = this.toLitMaterial(node, replaced);
+        node.material = this.toLitMaterial(node, replaced, level);
         node.matrixAutoUpdate = false;
         node.updateMatrix();
       }
@@ -182,6 +255,7 @@ export class GlbTileLoader {
   private toLitMaterial(
     mesh: THREE.Mesh,
     replaced: Set<THREE.Texture>,
+    level: number,
   ): THREE.MeshBasicMaterial {
     const source = mesh.material as THREE.MeshStandardMaterial;
     const geometry = mesh.geometry;
@@ -198,22 +272,30 @@ export class GlbTileLoader {
       // 半透明面（水）：写入深度以避免相邻瓦片叠blend接缝；透明通道内按距离排序绘制
       material.depthWrite = true;
     }
-    if (material.map && source.map) {
-      // LOD 色图 sampler 为 LINEAR（9729）；hires 图集为 NEAREST（9728）。
-      const linear = source.map.magFilter === THREE.LinearFilter;
-      if (linear) {
-        configureLodColormap(material.map);
-      } else if (this.sharedAtlas) {
-        // hires：共享图集替换内嵌副本；内嵌副本立即释放。
-        // 多 primitive 共享同一内嵌纹理：第二个 mesh 同样换成共享图集，但只 dispose 一次。
-        const embedded = material.map;
-        material.map = this.sharedAtlas;
-        if (!replaced.has(embedded)) {
+    if (level > 0) {
+      // LOD：内嵌色图（增量/旧瓦片）优先，否则用该层共享图集页（全量瓦片）。
+      // 两者都没有时保持 map=null，仅由 COLOR_0 的方向明暗着色。
+      const embedded = material.map;
+      const atlas = this.lodAtlases.get(level);
+      const resolved = resolveLodTexture(embedded, atlas);
+      if (resolved !== embedded) {
+        material.map = resolved;
+        if (embedded && !replaced.has(embedded)) {
+          // 换成图集页后，逐瓦片内嵌色图不再需要
           replaced.add(embedded);
           embedded.dispose();
         }
-      } else {
-        configureHiresAtlas(material.map);
+      }
+    } else {
+      const shared = resolveTileTexture(material.map, false, this.sharedAtlas);
+      if (shared !== material.map) {
+        // 多 primitive 共享同一内嵌纹理：第二个 mesh 同样换掉，但只 dispose 一次
+        const embedded = material.map;
+        material.map = shared;
+        if (embedded && !replaced.has(embedded)) {
+          replaced.add(embedded);
+          embedded.dispose();
+        }
       }
     }
     material.onBeforeCompile = (shader) => {

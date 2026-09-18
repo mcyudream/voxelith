@@ -1,14 +1,26 @@
 package online.yudream.voxelith.tile.application;
 
+import java.util.List;
+import java.util.Map;
+
 /**
- * 清单增量补丁：url → 新 sha1（空串 = 删除），以及尚未出现在清单中的新瓦片摘要。
+ * 清单增量补丁：url → 新 sha1（空串 = 删除），尚未出现在清单中的新瓦片摘要，
+ * 以及新增/替换的 LOD 层级图集页。
  * 编排域只传本 DTO，不引用 tile.domain.MapManifest。
+ *
+ * @param lodAtlasPages 新的 LOD 图集页（按 level 替换既有页）；空 = 沿用清单中已发布的页
  */
-public record ManifestPatch(java.util.Map<String, String> sha1ByUrl, java.util.List<NewTile> inserts) {
+public record ManifestPatch(Map<String, String> sha1ByUrl, List<NewTile> inserts,
+                            List<LodAtlasPage> lodAtlasPages) {
 
     public ManifestPatch {
-        sha1ByUrl = java.util.Map.copyOf(sha1ByUrl);
-        inserts = java.util.List.copyOf(inserts);
+        sha1ByUrl = Map.copyOf(sha1ByUrl);
+        inserts = List.copyOf(inserts);
+        lodAtlasPages = lodAtlasPages == null ? List.of() : List.copyOf(lodAtlasPages);
+    }
+
+    public ManifestPatch(Map<String, String> sha1ByUrl, List<NewTile> inserts) {
+        this(sha1ByUrl, inserts, List.of());
     }
 
     public static ManifestPatch sha1Only(java.util.Map<String, String> sha1ByUrl) {

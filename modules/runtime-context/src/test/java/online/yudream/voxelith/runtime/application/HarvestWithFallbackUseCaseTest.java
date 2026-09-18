@@ -26,9 +26,11 @@ class HarvestWithFallbackUseCaseTest {
     Path workDir;
 
     @Test
-    void runtimeSuccessSkipsStaticFallback() {
+    void runtimeSuccessSkipsStaticFallback() throws Exception {
         HarvestReport ok = new HarvestReport(true, Map.of(), 1003, List.of(), 1000,
                 24_135, 295_546, "models.json.gz");
+        // 产物必须真实存在：只认报告不认文件会让管线拿着空路径继续跑
+        Files.writeString(workDir.resolve("models.json.gz"), "{}");
         AtomicBoolean staticCalled = new AtomicBoolean(false);
         HarvestWithFallbackUseCase useCase = new HarvestWithFallbackUseCase(
                 spec -> ok,
@@ -48,6 +50,49 @@ class HarvestWithFallbackUseCaseTest {
         assertThat(acquisition.quadsExported()).isEqualTo(295_546);
         assertThat(acquisition.runtimeFailures()).isEmpty();
         assertThat(acquisition.artifactPath()).isEqualTo(workDir.resolve("models.json.gz"));
+    }
+
+    @Test
+    void okReportWithoutModelArtifactFallsBackToStaticResolve() {
+        // 纯 stub 自检模式：worker 自检全过、ok=true，但没有 modelsFile，
+        // 旧实现在这里 spec.workDir().resolve(null) 直接 NPE，或者谎报成功。
+        HarvestReport okWithoutModels = new HarvestReport(true, Map.of("spec.parsed", true),
+                0, List.of(), 120, 0, 0, null);
+        AtomicBoolean staticCalled = new AtomicBoolean(false);
+        HarvestWithFallbackUseCase useCase = new HarvestWithFallbackUseCase(
+                spec -> okWithoutModels,
+                (packs, outputDir) -> {
+                    staticCalled.set(true);
+                    return new ResolveOutcome(880, 1003, 3600, 3600, 1200, 0.88, 1.0);
+                },
+                new JsonModelAcquisitionSink());
+
+        RuntimeSpec spec = new RuntimeSpec("1.20.1", LoaderKind.FABRIC, "0.16.14", List.of(), workDir);
+        ModelAcquisition acquisition = useCase.acquire(spec, workDir.resolve("client.jar"));
+
+        assertThat(staticCalled).isTrue();
+        assertThat(acquisition.source()).isEqualTo(ModelSource.STATIC_FALLBACK);
+        assertThat(acquisition.blocksResolved()).isEqualTo(880);
+        assertThat(acquisition.runtimeFailures())
+                .anyMatch(f -> f.contains("未进入 fabric 采集阶段"));
+    }
+
+    @Test
+    void okReportWithMissingModelFileFallsBackToStaticResolve() throws Exception {
+        HarvestReport okButFileGone = new HarvestReport(true, Map.of(), 1003, List.of(), 1000,
+                24_135, 295_546, "models.json.gz");
+        // 报告里的文件名存在，但磁盘上没有（导出静默失败/被清理）
+        HarvestWithFallbackUseCase useCase = new HarvestWithFallbackUseCase(
+                spec -> okButFileGone,
+                (packs, outputDir) -> new ResolveOutcome(870, 1003, 3500, 3500, 0, 0.87, 1.0),
+                new JsonModelAcquisitionSink());
+
+        RuntimeSpec spec = new RuntimeSpec("1.20.1", LoaderKind.FABRIC, "0.16.14", List.of(), workDir);
+        ModelAcquisition acquisition = useCase.acquire(spec, workDir.resolve("client.jar"));
+
+        assertThat(acquisition.source()).isEqualTo(ModelSource.STATIC_FALLBACK);
+        assertThat(acquisition.runtimeFailures())
+                .anyMatch(f -> f.contains("模型文件不存在"));
     }
 
     @Test

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   AdaptiveDistance,
+  cacheLimitsForTier,
   detectDeviceProfile,
   FirstPersonControls,
   FloatingOrigin,
@@ -19,11 +20,14 @@ import {
 import type { MapManifest } from "@yudream/voxelith-core";
 import * as THREE from "three";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import UploadDialog from "./components/UploadDialog.vue";
 
 interface MapSummary {
   id: string;
   name: string;
-  version: string;
+  dimension: string;
+  worldVersion: string;
+  state: string;
 }
 
 const MODE_LABELS: Record<CameraMode, string> = {
@@ -40,6 +44,8 @@ const MODE_HINTS: Record<CameraMode, string> = {
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const maps = ref<MapSummary[]>([]);
+/** 列表里新出现、用户还没切过去的地图：工具栏据此提示「新地图已就绪」。 */
+const newMaps = ref<MapSummary[]>([]);
 const activeMapId = ref("");
 const manifest = ref<MapManifest | null>(null);
 const loadedTiles = ref(0);
@@ -48,6 +54,8 @@ const status = ref<"loading" | "ready" | "error">("loading");
 const errorMessage = ref("");
 const mode = ref<CameraMode>("flight");
 const showSettings = ref(false);
+/** 上传地图弹窗（上传存档 → 二维框选渲染范围 → 后台渲染） */
+const showUpload = ref(false);
 const cameraPos = reactive({ x: 0, y: 0, z: 0 });
 
 const settings = reactive({
@@ -88,8 +96,22 @@ let adaptive: AdaptiveDistance | null = null;
 /** 浮点原点：常规坐标（±2^24 内）下不触发；边疆量级自动重定基防 float32 精度撕裂 */
 const floatingOrigin = new FloatingOrigin();
 let posTimer = 0;
+/** 地图列表同步定时器（见 scheduleMapSync） */
+let mapSyncTimer = 0;
+/** 首次拉到列表之前的空列表不算「没有新地图」，首次拉完之后的才算差集 */
+let mapsPrimed = false;
 
 const modeHint = computed(() => MODE_HINTS[mode.value]);
+/** 工具栏提示里显示的最新一张新地图（没有新地图时为空串）。 */
+const newMapLabel = computed(() => newMaps.value[0]?.name ?? "");
+
+/**
+ * 地图 id 直接进 URL：id 允许中文等字符（发布目录名就是它），但不编码时
+ * `#`、`%`、`&` 会把路径截断或改变含义——所以统一过一遍 encodeURIComponent。
+ */
+function mapBaseUrl(mapId: string): string {
+  return `/maps/${encodeURIComponent(mapId)}`;
+}
 
 function createControls(m: CameraMode, tiltTarget?: THREE.Vector3): CameraControls {
   if (!engine || !canvasRef.value) {
@@ -127,6 +149,7 @@ function switchMode(m: CameraMode): void {
 
 async function openMap(mapId: string): Promise<void> {
   if (!engine) return;
+  forgetNewMap(mapId);
   status.value = "loading";
   loadedTiles.value = 0;
   failedTiles.value = 0;
@@ -135,7 +158,8 @@ async function openMap(mapId: string): Promise<void> {
   // 场景与相机随即按世界坐标重建，渲染原点归零
   floatingOrigin.reset();
   try {
-    const m = await loadManifest(`/maps/${mapId}`);
+    const baseUrl = mapBaseUrl(mapId);
+    const m = await loadManifest(baseUrl);
     manifest.value = m;
     const cx = (m.boundsMin[0] + m.boundsMax[0]) / 2;
     const cz = (m.boundsMin[2] + m.boundsMax[2]) / 2;
@@ -146,8 +170,10 @@ async function openMap(mapId: string): Promise<void> {
     controls = createControls(mode.value);
     tileManager = new TileManager({
       scene: engine.scene,
-      mapBaseUrl: `/maps/${mapId}`,
+      mapBaseUrl: baseUrl,
       manifest: m,
+      // 缓存上限按设备档位收紧：弱 GPU/移动端先耗尽的是显存与内存
+      ...cacheLimitsForTier(deviceProfile.value?.tier ?? "mid"),
       onTileLoaded: () => {
         loadedTiles.value = tileManager?.loadedCount ?? 0;
         failedTiles.value = tileManager?.failedCount ?? 0;
@@ -182,6 +208,115 @@ function selectMap(e: Event): void {
   if (id && id !== activeMapId.value) {
     activeMapId.value = id;
     void openMap(id);
+  }
+}
+
+/** 某张地图已经显示出来了，从「新地图」提示里摘掉。 */
+function forgetNewMap(mapId: string): void {
+  if (newMaps.value.some((m) => m.id === mapId)) {
+    newMaps.value = newMaps.value.filter((m) => m.id !== mapId);
+  }
+}
+
+/**
+ * 地图列表：渲染产物落盘即发布，重新拉一次 /api/maps 就能看到新地图。
+ *
+ * 每次刷新都会对上一份列表做差集：新出现的记为「新地图」（工具栏给一条提示，
+ * 用户点一下就切过去），正在看的那张被删掉则退回列表第一张——否则下拉框会停在空值上。
+ */
+async function refreshMaps(): Promise<void> {
+  let next: MapSummary[];
+  try {
+    const resp = await fetch("/api/maps");
+    if (!resp.ok) {
+      return;
+    }
+    next = (await resp.json()) as MapSummary[];
+  } catch {
+    // 列表接口不可用时保持原列表，仍可凭 ?map= 直连
+    return;
+  }
+  const known = new Set(maps.value.map((m) => m.id));
+  if (mapsPrimed) {
+    // 首次加载不算「新地图」，否则一进页面就提示一堆
+    for (const map of next) {
+      if (!known.has(map.id) && map.id !== activeMapId.value) {
+        newMaps.value = [...newMaps.value, map];
+      }
+    }
+  }
+  mapsPrimed = true;
+  newMaps.value = newMaps.value.filter((m) => next.some((n) => n.id === m.id));
+  maps.value = next;
+  const fallback = next[0];
+  if (fallback && activeMapId.value
+      && !next.some((m) => m.id === activeMapId.value)) {
+    // 发布目录被删：当前地图已经加载不出来了，退到列表第一张
+    activeMapId.value = fallback.id;
+    await openMap(fallback.id);
+  }
+}
+
+/** 上传弹窗里渲染完成后：刷新列表并直接切到新地图。 */
+async function onRendered(mapId: string): Promise<void> {
+  showUpload.value = false;
+  await refreshMaps();
+  forgetNewMap(mapId);
+  if (mapId && mapId !== activeMapId.value) {
+    activeMapId.value = mapId;
+    await openMap(mapId);
+  }
+}
+
+/** 关掉上传弹窗也要刷一次：渲染是后台跑的，关窗不等于没产物。 */
+function onUploadClose(): void {
+  showUpload.value = false;
+  void refreshMaps();
+}
+
+/** 工具栏的「新地图」提示：点一下直接切过去。 */
+function openLatestNewMap(): void {
+  const target = newMaps.value[0];
+  if (!target) {
+    return;
+  }
+  activeMapId.value = target.id;
+  void openMap(target.id);
+}
+
+/** 还有渲染任务在排队/执行吗（有就轮询得快一点）。 */
+async function hasActiveRenderJob(): Promise<boolean> {
+  try {
+    const resp = await fetch("/api/render/jobs");
+    if (!resp.ok) {
+      return false;
+    }
+    const jobs = (await resp.json()) as { state: string }[];
+    return jobs.some((j) => j.state === "QUEUED" || j.state === "RUNNING");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 地图列表由后台渲染产物决定，前端不会收到通知，所以自己轮询：
+ * 有任务在跑时 3s 一次（弹窗关了也在跑，进度得跟上），空闲时 15s 一次
+ * （兜住服务端重启、别的终端触发渲染等「没被本页面看见」的产物）。
+ * 页面不可见时跳过请求，回来时立刻补一次。
+ */
+async function scheduleMapSync(): Promise<void> {
+  window.clearTimeout(mapSyncTimer);
+  if (document.visibilityState === "visible") {
+    await refreshMaps();
+  }
+  const delay = (await hasActiveRenderJob()) ? 3000 : 15000;
+  mapSyncTimer = window.setTimeout(() => void scheduleMapSync(), delay);
+}
+
+/** 切回本页时立刻对一次账，不用等下一个轮询周期。 */
+function onVisibilityChange(): void {
+  if (document.visibilityState === "visible") {
+    void scheduleMapSync();
   }
 }
 
@@ -301,7 +436,7 @@ onMounted(async () => {
     }
   });
   engine.addFrameHook(() => tileManager?.update(engine!.camera));
-  engine.addFrameHook((dt) => adaptive?.update(dt));
+  engine.addFrameHook((dt, rawDt) => adaptive?.update(dt, rawDt));
   posTimer = window.setInterval(() => {
     if (!engine) return;
     const p = engine.camera.position;
@@ -313,14 +448,7 @@ onMounted(async () => {
 
   // 地图列表：?map= 优先，其次 swust，最后列表第一张
   let initial = new URLSearchParams(window.location.search).get("map") ?? "";
-  try {
-    const resp = await fetch("/api/maps");
-    if (resp.ok) {
-      maps.value = (await resp.json()) as MapSummary[];
-    }
-  } catch {
-    // 列表接口不可用时仍可凭 ?map= 直连
-  }
+  await refreshMaps();
   if (!initial || !maps.value.some((m) => m.id === initial)) {
     initial = maps.value.some((m) => m.id === "swust") ? "swust" : (maps.value[0]?.id ?? initial);
   }
@@ -331,10 +459,15 @@ onMounted(async () => {
     status.value = "error";
     errorMessage.value = "没有可用地图（/api/maps 为空）";
   }
+  // 后台渲染产物由轮询带进列表：新地图会自己出现在下拉框里
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  void scheduleMapSync();
 });
 
 onUnmounted(() => {
   window.clearInterval(posTimer);
+  window.clearTimeout(mapSyncTimer);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   adaptive = null;
   tileManager?.dispose();
   controls?.dispose();
@@ -356,6 +489,15 @@ onUnmounted(() => {
         <option v-for="m in maps" :key="m.id" :value="m.id">{{ m.name }}</option>
         <option v-if="!maps.length" disabled>{{ status === "loading" ? "加载中…" : "无地图" }}</option>
       </select>
+      <!-- 后台渲染刚发布的地图：点一下直接切过去（列表本身也已自动刷新） -->
+      <button
+        v-if="newMaps.length"
+        class="new-map-btn"
+        :title="`新地图「${newMapLabel}」已渲染完成，点击打开`"
+        @click="openLatestNewMap"
+      >
+        <span class="dot"></span>新地图：{{ newMapLabel }}
+      </button>
       <div class="mode-group">
         <button
           v-for="(label, key) in MODE_LABELS"
@@ -367,10 +509,21 @@ onUnmounted(() => {
           {{ label }}
         </button>
       </div>
+      <button class="text-btn" title="上传存档并自定义渲染范围" @click="showUpload = true">
+        <span class="plus">＋</span> 上传地图
+      </button>
       <button class="icon-btn" :class="{ active: showSettings }" title="设置" @click="showSettings = !showSettings">
         ⚙
       </button>
     </div>
+
+    <!-- 上传地图：上传存档 → 二维框选范围 → 后台渲染 -->
+    <UploadDialog
+      v-if="showUpload"
+      :maps="maps"
+      @close="onUploadClose"
+      @rendered="onRendered"
+    />
 
     <!-- 设置面板 -->
     <div v-if="showSettings" class="settings glass">
@@ -424,23 +577,24 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 左下状态栏 -->
-    <div class="statusbar glass">
-      <template v-if="status === 'ready' && manifest">
-        <span class="map-name">{{ manifest.name }}</span>
-        <span class="dim">v{{ manifest.version }}</span>
-        <span :class="{ warn: failedTiles > 0 }">
-          瓦片 {{ loadedTiles }}/{{ manifest.tiles.length }}<template v-if="failedTiles">（失败 {{ failedTiles }}）</template>
-        </span>
-        <span class="dim">X {{ cameraPos.x }} · Y {{ cameraPos.y }} · Z {{ cameraPos.z }}</span>
-        <span class="dim">视距 {{ currentDistance }} 区块{{ settings.autoDistance ? "（自动）" : "" }}</span>
-      </template>
-      <template v-else-if="status === 'loading'">加载清单中…</template>
-      <template v-else>清单加载失败：{{ errorMessage }}</template>
-    </div>
+    <!-- 底部：状态栏 + 操作提示。放进同一个弹性容器，避免两者各自绝对定位后互相压住 -->
+    <div class="bottombar">
+      <div class="statusbar glass">
+        <template v-if="status === 'ready' && manifest">
+          <span class="map-name">{{ manifest.name }}</span>
+          <span class="dim">v{{ manifest.version }}</span>
+          <span :class="{ warn: failedTiles > 0 }">
+            瓦片 {{ loadedTiles }}/{{ manifest.tiles.length }}<template v-if="failedTiles">（失败 {{ failedTiles }}）</template>
+          </span>
+          <span class="dim">X {{ cameraPos.x }} · Y {{ cameraPos.y }} · Z {{ cameraPos.z }}</span>
+          <span class="dim">视距 {{ currentDistance }} 区块{{ settings.autoDistance ? "（自动）" : "" }}</span>
+        </template>
+        <template v-else-if="status === 'loading'">加载清单中…</template>
+        <template v-else>清单加载失败：{{ errorMessage }}</template>
+      </div>
 
-    <!-- 底部操作提示 -->
-    <div class="hintbar glass">{{ modeHint }}</div>
+      <div class="hintbar glass" :title="modeHint">{{ modeHint }}</div>
+    </div>
   </div>
 </template>
 
@@ -514,6 +668,39 @@ body,
 
 .map-select option {
   background: #141a24;
+}
+
+/* 后台渲染产物的提示：绿点 + 地图名，点一下切过去 */
+.new-map-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 1px solid rgba(88, 200, 130, 0.45);
+  background: rgba(88, 200, 130, 0.14);
+  color: #8ee0ac;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.new-map-btn:hover {
+  background: rgba(88, 200, 130, 0.26);
+  color: #b6f0cb;
+}
+
+.new-map-btn .dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #58c882;
+  box-shadow: 0 0 6px rgba(88, 200, 130, 0.9);
 }
 
 .mode-group {
@@ -614,22 +801,44 @@ body,
   color: #8b93a3;
 }
 
-/* 左下状态栏 */
-.statusbar {
+/* 底部条：状态栏（左）与操作提示（右）同一个弹性行，天然不重叠；
+   窄屏放不下时改为上下堆叠，而不是互相压住 */
+.bottombar {
   position: absolute;
   left: 12px;
+  right: 12px;
   bottom: 12px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+/* 容器不拦事件（别挡住 3D 画布的拖拽），但两块浮窗自身要能接收 hover/选中 */
+.statusbar,
+.hintbar {
+  pointer-events: auto;
+}
+
+.statusbar {
   display: flex;
   gap: 14px;
   align-items: baseline;
   padding: 7px 14px;
   font-size: 12.5px;
-  pointer-events: none;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .map-name {
   font-weight: 600;
+  /* 窄屏时优先压缩地图名，而不是整条状态栏被裁掉半截 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dim {
@@ -642,14 +851,51 @@ body,
 
 /* 底部提示 */
 .hintbar {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
   padding: 6px 16px;
   font-size: 12px;
   color: #8b93a3;
-  pointer-events: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .bottombar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .hintbar {
+    max-width: 100%;
+  }
+}
+
+/* 顶部工具栏的上传入口 */
+.text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(94, 177, 255, 0.45);
+  background: rgba(94, 177, 255, 0.12);
+  color: #cfe4ff;
+  font-size: 13px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.text-btn:hover {
+  background: rgba(94, 177, 255, 0.24);
+  color: #fff;
+}
+
+.text-btn .plus {
+  font-weight: 700;
 }
 </style>

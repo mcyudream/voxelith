@@ -5,19 +5,23 @@ import online.yudream.voxelith.sharedkernel.vo.Identifier;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 贴图平均色采样：取贴图不透明像素（alpha ≥ 128）在线性光空间的 RGB 均值，
  * 供 LOD 柱状几何取色。sRGB 字节不能直接平均（伽马编码下平均会偏亮）。
  * 结果按贴图 id 缓存（图集级采样一次即可复用整张金字塔）。
+ *
+ * <p>缓存用 {@link ConcurrentHashMap}：采样器是共享的无状态服务，LOD 链路单线程调用时
+ * 看不出差别，但离屏地表预览按 region 并行取色，普通 HashMap 会在并发写入时抛
+ * {@code ConcurrentModificationException}。{@code compute} 幂等，重复计算只是多解一次贴图。</p>
  */
 public class TextureColorSampler {
 
     private final TexturePixelSource pixelSource;
-    private final Map<String, Integer> cache = new HashMap<>();
+    private final Map<String, Integer> cache = new ConcurrentHashMap<>();
 
     public TextureColorSampler(TexturePixelSource pixelSource) {
         this.pixelSource = pixelSource;
@@ -35,6 +39,10 @@ public class TextureColorSampler {
      * 比整张贴图平均更能反映实际露出的区域（草顶 vs 侧面、裁切面）。
      */
     public int sampleUvAverageRgb(String textureId, float[] uvs) {
+        if (textureId == null) {
+            // 无贴图的面（部分 mod 模型）：按「取不到色」处理，由调用方兜底
+            return -1;
+        }
         Optional<AtlasTexture> texture = pixelSource.load(Identifier.parse(textureId));
         if (texture.isEmpty()) {
             return -1;

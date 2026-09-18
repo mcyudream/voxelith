@@ -1,7 +1,7 @@
 import * as THREE from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MapManifest, ManifestTile } from "@yudream/voxelith-core";
-import { TileManager } from "./TileManager.js";
+import { evictionScore, retryDelayMs, TileManager } from "./TileManager.js";
 
 /**
  * 构造一棵小型 LOD 金字塔：hiresTileSize=32，lodCount=3（层级 0/1/2）。
@@ -42,6 +42,7 @@ function makeManifest(): MapManifest {
     boundsMin: [0, 0, 0],
     boundsMax: [256, 64, 128],
     atlas: { url: "atlas.png", size: 128, textureCount: 1 },
+    lodAtlases: [],
     tiles,
   };
 }
@@ -257,6 +258,156 @@ describe("TileManager 代际防竞态与浮点原点", () => {
       const level = Number(key.split(":")[0]);
       expect(tile.group.visible).toBe(level === 0);
     }
+    tm.dispose();
+  });
+});
+
+describe("TileManager 缓存版本戳", () => {
+  it("瓦片 URL 用自身 sha1 做版本戳，而不是全图聚合 version", async () => {
+    const urls: string[] = [];
+    const loader = {
+      load: (url: string) => {
+        urls.push(url);
+        return Promise.resolve(makeTrackableGroup().group);
+      },
+    };
+    const tm = new TileManager({
+      scene: new THREE.Scene(),
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+    tm.update(camera);
+    await flushMicrotasks();
+
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url).toContain("?sha=test");
+      expect(url).not.toContain("?v=v1");
+    }
+    tm.dispose();
+  });
+});
+
+describe("TileManager 失败重试", () => {
+  it("retryDelayMs 指数退避并封顶", () => {
+    expect(retryDelayMs(1, 1000, 30000)).toBe(1000);
+    expect(retryDelayMs(2, 1000, 30000)).toBe(2000);
+    expect(retryDelayMs(3, 1000, 30000)).toBe(4000);
+    expect(retryDelayMs(9, 1000, 30000)).toBe(30000);
+    expect(retryDelayMs(0, 1000, 30000)).toBe(0);
+  });
+
+  it("瞬时失败在退避到期后重试成功，失败计数清零", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let clock = 0;
+    let attempts = 0;
+    const loader = {
+      load: (url: string) => {
+        if (!url.includes("tiles/l2/1/0.glb")) {
+          return Promise.resolve(makeTrackableGroup().group);
+        }
+        attempts++;
+        return attempts === 1
+          ? Promise.reject(new Error("瞬时网络错误"))
+          : Promise.resolve(makeTrackableGroup().group);
+      },
+    };
+    const tm = new TileManager({
+      scene: new THREE.Scene(),
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+      now: () => clock,
+      retryBaseDelayMs: 1000,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+
+    tm.update(camera);
+    await flushMicrotasks();
+    expect(attempts).toBe(1);
+    expect(tm.failedCount).toBe(1);
+
+    // 退避未到期：不重新入队，避免对刚失败的瓦片疯狂重试
+    clock = 999;
+    tm.update(camera);
+    await flushMicrotasks();
+    expect(attempts).toBe(1);
+
+    // 退避到期：重新入队并成功
+    clock = 1000;
+    tm.update(camera);
+    await flushMicrotasks();
+    expect(attempts).toBe(2);
+    expect(tm.failedCount).toBe(0);
+    tm.dispose();
+    errorSpy.mockRestore();
+  });
+
+  it("超过尝试上限后不再重试（保留失败计数）", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let clock = 0;
+    let attempts = 0;
+    const loader = {
+      load: (url: string) => {
+        if (!url.includes("tiles/l2/1/0.glb")) {
+          return Promise.resolve(makeTrackableGroup().group);
+        }
+        attempts++;
+        return Promise.reject(new Error("持续失败"));
+      },
+    };
+    const tm = new TileManager({
+      scene: new THREE.Scene(),
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+      now: () => clock,
+      maxTileAttempts: 2,
+      retryBaseDelayMs: 100,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+
+    for (clock of [0, 100, 1000, 10000]) {
+      tm.update(camera);
+      await flushMicrotasks();
+    }
+    expect(attempts).toBe(2);
+    expect(tm.failedCount).toBe(1);
+    tm.dispose();
+    errorSpy.mockRestore();
+  });
+});
+
+describe("TileManager 淘汰", () => {
+  it("evictionScore 以帧龄为主、距离为辅（越旧越先淘汰）", () => {
+    // 陈旧一帧（+1000）压过 999 方块的距离差
+    expect(evictionScore(999, 1)).toBeGreaterThan(evictionScore(0, 0));
+    // 同帧龄时更远的先淘汰
+    expect(evictionScore(100, 0)).toBeGreaterThan(evictionScore(10, 0));
+  });
+
+  it("数量上限被强制，不会因任何保护逻辑突破", async () => {
+    const loader = {
+      load: () => Promise.resolve(makeTrackableGroup().group),
+    };
+    const tm = new TileManager({
+      scene: new THREE.Scene(),
+      mapBaseUrl: "http://localhost/maps/test",
+      manifest: makeManifest(),
+      loader,
+      maxLoaded: 1,
+    });
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(16, 10, 16);
+    tm.update(camera);
+    await flushMicrotasks();
+
+    expect(tm.loadedCount).toBeLessThanOrEqual(1);
     tm.dispose();
   });
 });

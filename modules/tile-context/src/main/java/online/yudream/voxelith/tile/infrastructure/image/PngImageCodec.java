@@ -1,6 +1,6 @@
 package online.yudream.voxelith.tile.infrastructure.image;
 
-import online.yudream.voxelith.tile.domain.atlas.ImageCodec;
+import online.yudream.voxelith.tile.application.ImageCodec;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;

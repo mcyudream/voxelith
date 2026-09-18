@@ -6,6 +6,7 @@ import online.yudream.voxelith.tile.application.PublishManifestUseCase;
 import online.yudream.voxelith.tile.application.PublishedAtlas;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
 import online.yudream.voxelith.tile.application.VertexColorTileExporter;
+import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestPublisher;
 import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileTileArtifactSink;
@@ -24,8 +25,17 @@ public final class TileContextBootstrap {
     }
 
     public static GenerateTilesUseCase openGenerator(ResolvedResourceCatalog catalog) {
+        return openGenerator(catalog, new CatalogTexturePixelSource(catalog));
+    }
+
+    /**
+     * 自定义贴图像素来源的生成器：地图画等「非资源包」贴图需要包一层
+     * （地图颜色来自存档 data/map_*.dat，不在资源包里）。
+     */
+    public static GenerateTilesUseCase openGenerator(ResolvedResourceCatalog catalog,
+                                                     TexturePixelSource pixelSource) {
         return new GenerateTilesUseCase(
-                new CatalogTexturePixelSource(catalog),
+                pixelSource,
                 new PngImageCodec(),
                 new GlbTileEncoder(),
                 new FileTileArtifactSink());

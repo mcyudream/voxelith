@@ -1,6 +1,11 @@
-# 瓦片 glb 格式（hires）
+# 瓦片 glb 格式
 
-瓦片为二进制 glTF 2.0（glb），每瓦片一个 mesh；primitive 数量取决于是否含半透明几何（水）：无水面时 1 个 primitive，含水面时 2 个（opaque + translucent）。内嵌一张 PNG 贴图（图集切片，无损，前端 Nearest 过滤）。
+瓦片为二进制 glTF 2.0（glb），每瓦片一个 mesh；primitive 数量取决于是否含半透明几何（水）：无水面时 1 个 primitive，含水面时 2 个（opaque + translucent）。
+
+贴图有两种承载方式：
+
+- **hires 瓦片**：内嵌一张 PNG（图集切片，无损，前端 Nearest 过滤），前端按清单 `atlas` 用共享纹理替换内嵌副本。
+- **LOD 瓦片**：全量生成时**不内嵌 PNG**，只带指向该层图集页的 UV（见「LOD 图集页」）；增量重跑或旧格式的瓦片仍内嵌自己的色图（前端按「内嵌优先」兼容）。
 
 ## 顶点属性（每个 primitive 各一份，accessor 序号按段顺推）
 
@@ -8,7 +13,7 @@
 |---|---|---|---|---|
 | `POSITION` | 5126 (float) | VEC3 | 否 | 瓦片局部坐标（方块单位）；accessor 带 min/max |
 | `NORMAL` | 5126 (float) | VEC3 | 否 | 面法线 |
-| `TEXCOORD_0` | 5126 (float) | VEC2 | 否 | 内嵌贴图 UV |
+| `TEXCOORD_0` | 5126 (float) | VEC2 | 否 | 贴图 UV：hires 为图集坐标；LOD 为图集页坐标或瓦片局部 0..1（内嵌色图时） |
 | `COLOR_0` | 5121 (ubyte) | VEC3 | **是** | 群系染色（tintIndex≥0 的面：草/树叶按群系 colormap，水按群系 water_color；桦叶/杉叶/睡莲为原版固定色）；无染色 = 白 |
 | `_LIGHT` | 5121 (ubyte) | VEC3 | **是** | 烘焙光照：R=天空光×17，G=方块光×17，B=AO×85（AO 为 0..3 级遮挡计数） |
 | indices | 5125 (uint) | SCALAR | — | 每 quad 2 三角形，段内从 0 起编 |
@@ -16,8 +21,9 @@
 - `_LIGHT` 为 glTF 自定义属性（下划线前缀约定）。three.js GLTFLoader 会将其小写化为 `_light` 挂到 `geometry.attributes`；`COLOR_0` 映射为 `color`。
 - 天空光/方块光取值 0..15，来自存档 NBT（不自行传播），按 MC 角点规则在四顶点采样：取顶点朝向侧 4 个角格（base/side1/side2/corner）中非不透明格的光照平均。
 - AO 为 MC 角点遮挡计数 0..3：两侧邻格均遮挡时强制 3；前端换算亮度 `1 - 0.25×n`（可乘 AO 强度参数）。
-- 字节布局顺序：opaque 段（positions → normals → uvs → colors → lights → indices）→ translucent 段（同序，可空）→ PNG。colors/lights 每 quad 12B，保证后续 indices 4 字节对齐。
+- 字节布局顺序：opaque 段（positions → normals → uvs → colors → lights → indices）→ translucent 段（同序，可空）→ PNG（无内嵌贴图时省略）。
 - 旧格式瓦片（无 `_light` 属性）前端回退为无光照基础材质。
+- LOD 无内嵌贴图时材质无 `baseColorTexture`（`alphaMode: OPAQUE`），纹理由前端按清单 `lodAtlases` 挂上，`COLOR_0` 只承载方向明暗（顶面 255、东西 153、南北 204）。
 
 ## 流体（水/岩浆）几何
 
@@ -42,9 +48,34 @@
 - 贴图尺寸不等于单元格时按最近邻缩放铺满单元格（UV 映射假定贴图铺满整格）。
 - 动画贴图（竖条）只取第一帧（宽×宽）。
 
+## LOD 图集页
+
+LOD 瓦片的航拍色图按层拼成共享页，前端每层只解码一张纹理（此前是每瓦片一张 128² PNG，
+2176 片即 2000+ 纹理对象与同等数量的解码，是 LOD 规模加载后掉帧的主因之一）。
+
+- **路径**：`tiles/lod/{level}/lod-atlas.png`（放在 `tiles/` 下，随全量发布的整树拷贝一起走）。
+- **布局**：按世界瓦片网格定位，槽位 = `(tileX - 该层最小 tileX, tileZ - 该层最小 tileZ)`，行主序。
+  空洞瓦片只浪费一个槽位；好处是槽位与「该层存在哪些瓦片」无关，增量重跑后 UV 依然稳定。
+- **槽位边长**：L1 = 64、L2 = 32、更深 32，再按 4096 页面上限收缩并对齐到 8 像素（下限 16）。
+  随层减半的依据是层级 L 瓦片的屏幕跨度约为 L1 的 1/2^(L-1)，同一分辨率纯属浪费。
+- **UV**：瓦片 glb 的 `TEXCOORD_0` 已重映射成图集坐标（瓦片局部 0..1 → 槽位矩形），
+  并做**半纹素内缩**——线性过滤下采样点落在槽位边界会与相邻槽位插值出串色条纹。
+- **清单**：`lodAtlases: [{ level, url, slotSize, sha1 }]`；`sha1` 是页内容哈希，前端拼
+  `?sha=` 做缓存版本戳（页路径固定，不带戳会被 7 天强缓存挡住更新）。
+  缺省/空数组 = 该层瓦片各自内嵌色图，前端按内嵌色图渲染。
+- **仅全量生成**：增量重跑手上只有被替换 region 的栅格，重拼整页会把未变区域抹成透明，
+  因此增量瓦片继续内嵌自己的色图；同一张地图里两种瓦片共存，前端按「内嵌色图优先、否则用该层页」渲染。
+
+> 重新发布时：全量链路把 LOD 阶段的 `LodOutcome.atlasPages()` 传给
+> `PublishManifestUseCase.publish(..., atlasPages, ...)`；若改为从盘重建产物
+> （`DiskTileIndexer`），需要一并声明各层的图集页，否则清单会丢掉 `lodAtlases`，
+> 已按图集 UV 生成的瓦片将只有方向明暗、没有色图。
+
 ## 版本与缓存
 
-瓦片 URL 为 `tiles/hires/{x}/{z}.glb`，前端请求附加 `?v={manifest.version}` 防止 HTTP 强缓存命中旧版（瓦片同 URL 覆盖发布）。
+瓦片 URL 为 `tiles/hires/{x}/{z}.glb` 与 `tiles/lod/{level}/{x}/{z}.glb`，前端按**瓦片自身 sha1**
+附加 `?sha={tile.sha1}`（`manifest.tiles[].sha1`）：内容未变的瓦片跨地图版本继续命中 7 天强缓存，
+而聚合哈希 `manifest.version` 任一瓦片变动即全图失效。
 
 ## 可选量化（KHR_mesh_quantization）
 

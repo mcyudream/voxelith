@@ -1,7 +1,9 @@
 package online.yudream.voxelith.server.config;
 
 import online.yudream.voxelith.bake.application.BakeChunksUseCase;
+import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
 import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
+import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
 import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
 import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
 import online.yudream.voxelith.orchestration.application.IncrementalUpdateUseCase;
@@ -21,12 +23,16 @@ import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
 import online.yudream.voxelith.tile.infrastructure.bootstrap.TileContextBootstrap;
 import online.yudream.voxelith.world.application.WorldBlockAccess;
 import online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -40,6 +46,8 @@ import java.util.concurrent.ScheduledExecutorService;
 @ConditionalOnProperty(prefix = "yudream.voxelith.incremental", name = "enabled", havingValue = "true")
 public class IncrementalRenderConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(IncrementalRenderConfig.class);
+
     @Bean(destroyMethod = "close")
     public WorldBlockAccess incrementalWorld(
             @Value("${yudream.voxelith.incremental.world-dir}") String worldDir,
@@ -47,14 +55,28 @@ public class IncrementalRenderConfig {
         return WorldContextBootstrap.openBlockAccess(Path.of(worldDir), dimension);
     }
 
+    /**
+     * bake/tile 共用的资源目录。mod jar 叠在原版包之上（优先级更高）：mod 的 blockstate /
+     * model / texture 必须都能解析，否则 mod 方块在 bake 侧查不到模型（无几何），
+     * 贴图也会落成品红兜底格。
+     */
     @Bean(destroyMethod = "close")
     public ResolvedResourceCatalog incrementalCatalog(
-            @Value("${yudream.voxelith.incremental.pack-dir:}") String packDir) {
+            @Value("${yudream.voxelith.incremental.pack-dir:}") String packDir,
+            @Value("${yudream.voxelith.incremental.mod-jars:}") String modJars) {
         if (packDir == null || packDir.isBlank()) {
             throw new IllegalStateException(
                     "incremental.enabled=true 需要 yudream.voxelith.incremental.pack-dir");
         }
-        return ResourceContextBootstrap.openCatalog(List.of(Path.of(packDir)));
+        List<Path> packs = new ArrayList<>();
+        packs.add(Path.of(packDir));
+        for (Path modJar : splitPaths(modJars)) {
+            if (!Files.isRegularFile(modJar)) {
+                throw new IllegalStateException("mod jar 不存在: " + modJar.toAbsolutePath());
+            }
+            packs.add(modJar);
+        }
+        return ResourceContextBootstrap.openCatalog(packs);
     }
 
     @Bean
@@ -69,9 +91,12 @@ public class IncrementalRenderConfig {
             ResolvedResourceCatalog incrementalCatalog,
             PublishedAtlas publishedAtlas,
             @Value("${yudream.voxelith.publish-dir:./data/maps}") String publishDir,
+            @Value("${yudream.voxelith.work-dir:./work}") String workDir,
+            @Value("${yudream.voxelith.incremental.models-file:}") String modelsFile,
             @Value("${yudream.voxelith.incremental.map-id:demo}") String mapId) {
         BakeChunksUseCase bake = new BakeChunksUseCase(
-                incrementalCatalog, incrementalWorld, new FileBakeArtifactSink());
+                incrementalCatalog, incrementalWorld, new FileBakeArtifactSink(),
+                resolvePrebaked(modelsFile, workDir));
         GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(incrementalCatalog);
         GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                 TileContextBootstrap.openTextureColorSampler(incrementalCatalog),
@@ -82,6 +107,39 @@ public class IncrementalRenderConfig {
                 incrementalWorld, bake, tiles, lod, publishedAtlas,
                 new FileHeightfieldStore(mapDir.resolve("heightfield.bin")),
                 mapDir);
+    }
+
+    /**
+     * runtime 采集产物 models.json.gz 的解析（Phase 5 → bake 消费）：显式配置优先，
+     * 缺省探测 {@code work-dir/models.json.gz}。未命中时返回 null 让 bake 退回静态模型解析，
+     * 而不是让应用启动失败——管线可能还没跑过采集。
+     */
+    private static PrebakedQuadSource resolvePrebaked(String modelsFile, String workDir) {
+        Path path = modelsFile != null && !modelsFile.isBlank()
+                ? Path.of(modelsFile)
+                : Path.of(workDir).resolve("models.json.gz");
+        if (!Files.isRegularFile(path)) {
+            log.warn("未找到 runtime 采集产物 {}，bake 退回静态模型解析（mod 方块可能缺几何或贴图）；"
+                    + "先执行 `gradle :apps:voxelith-server:harvestModels` 生成", path.toAbsolutePath());
+            return null;
+        }
+        PrebakedQuadSource source = NdjsonPrebakedQuadSource.load(path);
+        log.info("bake 使用 runtime 采集模型集: {}", path.toAbsolutePath());
+        return source;
+    }
+
+    /** 逗号/分号分隔的路径列表（跳过空白项）。 */
+    private static List<Path> splitPaths(String raw) {
+        List<Path> paths = new ArrayList<>();
+        if (raw == null || raw.isBlank()) {
+            return paths;
+        }
+        for (String piece : raw.split("[,;]")) {
+            if (!piece.isBlank()) {
+                paths.add(Path.of(piece.trim()));
+            }
+        }
+        return paths;
     }
 
     @Bean

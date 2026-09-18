@@ -1,11 +1,5 @@
 package online.yudream.voxelith.server.config;
 
-import online.yudream.voxelith.resource.application.ResolveCommand;
-import online.yudream.voxelith.resource.application.ResolveResourcesUseCase;
-import online.yudream.voxelith.resource.infrastructure.artifact.FileResolveArtifactSink;
-import online.yudream.voxelith.resource.infrastructure.pack.ResourcePackAutoFactory;
-import online.yudream.voxelith.resource.infrastructure.parse.GsonBlockstateParser;
-import online.yudream.voxelith.resource.infrastructure.parse.GsonModelParser;
 import online.yudream.voxelith.runtime.application.ModelAcquisitionSink;
 import online.yudream.voxelith.runtime.application.StaticModelResolvePort;
 import online.yudream.voxelith.runtime.infrastructure.fallback.JsonModelAcquisitionSink;
@@ -21,12 +15,7 @@ public class RuntimeHarvestConfig {
 
     @Bean
     public StaticModelResolvePort staticModelResolvePort() {
-        ResolveResourcesUseCase resolve = new ResolveResourcesUseCase(
-                new ResourcePackAutoFactory(),
-                new GsonBlockstateParser(),
-                new GsonModelParser(),
-                new FileResolveArtifactSink());
-        return (packs, outputDir) -> resolve.resolve(new ResolveCommand(packs, outputDir));
+        return StaticModelResolveFactory.create();
     }
 
     @Bean

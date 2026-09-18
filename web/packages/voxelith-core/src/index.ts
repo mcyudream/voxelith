@@ -33,6 +33,22 @@ export const atlasRefSchema = z.object({
 });
 export type AtlasRef = z.infer<typeof atlasRefSchema>;
 
+/**
+ * LOD 层级共享图集页：该层全部瓦片的航拍色图拼成一页，瓦片 glb 只带指向本页的 UV。
+ * 前端每层加载一张纹理即可，无需逐瓦片解码色图。
+ */
+export const lodAtlasRefSchema = z.object({
+  /** LOD 层级（≥ 1） */
+  level: z.number().int().min(1),
+  /** 相对地图根的图集页地址 */
+  url: z.string().min(1),
+  /** 槽位边长（像素） */
+  slotSize: z.number().int().positive(),
+  /** 页内容哈希：拼瓦片 URL 的缓存版本戳 */
+  sha1: z.string().min(1),
+});
+export type LodAtlasRef = z.infer<typeof lodAtlasRefSchema>;
+
 /** 单个瓦片的索引项。sha1 为内容哈希，用于前端缓存失效与增量更新比对。 */
 export const manifestTileSchema = z.object({
   level: z.number().int().min(0),
@@ -59,6 +75,8 @@ export const mapManifestSchema = z.object({
   boundsMin: vec3Array,
   boundsMax: vec3Array,
   atlas: atlasRefSchema,
+  /** LOD 每层共享图集页；缺省/空数组 = 该层瓦片各自内嵌色图（老清单与增量瓦片） */
+  lodAtlases: z.array(lodAtlasRefSchema).default([]),
   tiles: z.array(manifestTileSchema),
 });
 export type MapManifest = z.infer<typeof mapManifestSchema>;

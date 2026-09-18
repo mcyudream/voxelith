@@ -5,6 +5,7 @@ import online.yudream.voxelith.runtime.domain.HarvestReport;
 import online.yudream.voxelith.runtime.domain.RuntimeSpec;
 import online.yudream.voxelith.runtime.domain.RuntimeWorkerLauncher;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,15 +38,24 @@ public final class HarvestWithFallbackUseCase {
      */
     public ModelAcquisition acquire(RuntimeSpec spec, Path assetJar) {
         HarvestReport report = harvest.harvest(spec);
+        Path modelsFile = runtimeArtifact(spec, report);
 
         ModelAcquisition acquisition;
-        if (report.ok()) {
+        if (modelsFile != null) {
             acquisition = new ModelAcquisition(
                     ModelSource.RUNTIME_HARVEST, true,
                     report.statesExported(), report.quadsExported(),
                     0, 0, List.of(),
-                    spec.workDir().resolve(report.modelsFile()));
+                    modelsFile);
         } else {
+            List<String> failures = new ArrayList<>(report.failures());
+            if (report.ok()) {
+                // 自检通过却没有模型产物（纯 stub 模式、导出静默失败等）：不能当成功——
+                // 否则管线会拿着不存在的 models.json.gz 继续跑，mod 方块全部无几何。
+                failures.add(report.modelsFile() == null
+                        ? "worker 自检通过但未进入 fabric 采集阶段，无模型产物"
+                        : "worker 报告成功但模型文件不存在: " + report.modelsFile());
+            }
             List<Path> packs = new ArrayList<>();
             packs.add(assetJar);
             packs.addAll(spec.modJars());
@@ -55,9 +65,21 @@ public final class HarvestWithFallbackUseCase {
                     ModelSource.STATIC_FALLBACK, outcome.blocksResolved() > 0,
                     0, 0,
                     outcome.blocksResolved(), outcome.blocksFound(),
-                    report.failures(), outputDir);
+                    failures, outputDir);
         }
         sink.write(spec.workDir(), acquisition);
         return acquisition;
+    }
+
+    /**
+     * runtime 路径的模型产物：报告成功、给出文件名、且文件确实存在时才认可。
+     * 三者缺一都退回静态解析——报告与实际产物不一致时以产物为准。
+     */
+    private static Path runtimeArtifact(RuntimeSpec spec, HarvestReport report) {
+        if (!report.ok() || report.modelsFile() == null) {
+            return null;
+        }
+        Path file = spec.workDir().resolve(report.modelsFile());
+        return Files.isRegularFile(file) ? file : null;
     }
 }

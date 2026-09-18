@@ -29,6 +29,14 @@ public class PublishManifestUseCase {
      */
     public MapManifest publish(String mapId, String name, Path tilesDir, TileOutcome outcome,
                                Path publishRoot) {
+        return publish(mapId, name, tilesDir, outcome, List.of(), publishRoot);
+    }
+
+    /**
+     * @param lodAtlasPages LOD 层级图集页（全量生成时由 lod 链路给出；空 = 该批瓦片各自内嵌色图）
+     */
+    public MapManifest publish(String mapId, String name, Path tilesDir, TileOutcome outcome,
+                               List<LodAtlasPage> lodAtlasPages, Path publishRoot) {
         List<MapManifest.TileEntry> entries = new ArrayList<>();
         float[] min = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE};
         float[] max = {-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
@@ -51,12 +59,18 @@ public class PublishManifestUseCase {
             max = new float[]{0, 0, 0};
         }
 
+        List<MapManifest.LodAtlasRef> lodAtlases = new ArrayList<>();
+        for (LodAtlasPage page : lodAtlasPages) {
+            lodAtlases.add(new MapManifest.LodAtlasRef(
+                    page.level(), page.url(), page.slotSize(), page.sha1()));
+        }
+
         MapManifest manifest = new MapManifest(1, mapId, name, InvalidateManifestUseCase.contentVersion(entries),
                 Instant.now().toString(),
                 new MapManifest.Settings(TileMeshAssembler.HIRES_TILE_SIZE, maxLevel + 1),
                 min, max,
                 new MapManifest.AtlasRef("atlas.png", outcome.atlasSize(), outcome.textureCount()),
-                entries);
+                entries, lodAtlases);
 
         publisher.publish(mapId, tilesDir, manifest, publishRoot);
         return manifest;

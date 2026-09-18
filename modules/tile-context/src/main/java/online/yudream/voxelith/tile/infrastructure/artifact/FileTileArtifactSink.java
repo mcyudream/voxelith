@@ -43,6 +43,13 @@ public final class FileTileArtifactSink implements TileArtifactSink {
     }
 
     @Override
+    public String writeLodAtlas(Path outputDir, int level, byte[] png) {
+        String url = TileArtifactSink.lodAtlasUrl(level);
+        write(outputDir.resolve(url), png);
+        return url;
+    }
+
+    @Override
     public Path writeReport(Path outputDir, List<TileOutcome.TileSummary> tiles,
                             int textureCount, int atlasSize) {
         JsonObject report = new JsonObject();

@@ -112,10 +112,16 @@ export class AdaptiveDistance {
     return this.currentChunks;
   }
 
-  /** 每帧钩子：统计 FPS、按窗口步进、向目标插值并应用。 */
-  update(dtSeconds: number): void {
+  /**
+   * 每帧钩子：统计 FPS、按窗口步进、向目标插值并应用。
+   *
+   * @param dtSeconds    已截断的时间步（视距插值用）
+   * @param rawDtSeconds 真实帧间隔（FPS 统计用）。传已截断的值会让低帧率
+   *   下的 elapsed 被人为压缩：4fps 会算出约 10fps，视距读数与放大判据同时失真。
+   */
+  update(dtSeconds: number, rawDtSeconds: number = dtSeconds): void {
     this.frames++;
-    this.elapsedMs += dtSeconds * 1000;
+    this.elapsedMs += rawDtSeconds * 1000;
     if (this.elapsedMs >= this.windowMs) {
       const fps = (this.frames * 1000) / this.elapsedMs;
       this.frames = 0;
