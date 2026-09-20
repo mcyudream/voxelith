@@ -224,6 +224,11 @@ public class GenerateLodPyramidUseCase {
                 if (quad.normal()[1] <= 0.5f) {
                     continue;
                 }
+                // 实体几何（盔甲架等）不进地表高度场/航拍色：原版高度场只统计方块，
+                // 而盔甲架底座顶面的投影面积刚好过线，混进来会把地表高度抬到实体位置
+                if (BakedQuadData.NON_TERRAIN_FACE.equals(quad.face())) {
+                    continue;
+                }
                 float[] p = quad.positions();
                 for (int v = 0; v < 4; v++) {
                     float x = p[v * 3];

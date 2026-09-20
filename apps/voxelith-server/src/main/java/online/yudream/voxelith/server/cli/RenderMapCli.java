@@ -1,19 +1,19 @@
-package online.yudream.voxelith.server.cli;
-
-import online.yudream.voxelith.bake.application.BakeChunksUseCase;
-import online.yudream.voxelith.bake.application.BakeCommand;
-import online.yudream.voxelith.bake.application.BakeOutcome;
-import online.yudream.voxelith.bake.application.BakedMeshMapper;
-import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
-import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
-import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
-import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
-import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
-import online.yudream.voxelith.lod.application.HeightfieldStore;
-import online.yudream.voxelith.lod.application.LodCommand;
-import online.yudream.voxelith.lod.application.LodOutcome;
-import online.yudream.voxelith.lod.domain.heightfield.AerialRaster;
-import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
+package online.yudream.voxelith.server.cli;
+
+import online.yudream.voxelith.bake.application.BakeChunksUseCase;
+import online.yudream.voxelith.bake.application.BakeCommand;
+import online.yudream.voxelith.bake.application.BakeOutcome;
+import online.yudream.voxelith.bake.application.BakedMeshMapper;
+import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
+import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
+import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
+import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
+import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
+import online.yudream.voxelith.lod.application.HeightfieldStore;
+import online.yudream.voxelith.lod.application.LodCommand;
+import online.yudream.voxelith.lod.application.LodOutcome;
+import online.yudream.voxelith.lod.domain.heightfield.AerialRaster;
+import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
 import online.yudream.voxelith.server.support.McVersionResolver;
 import online.yudream.voxelith.resource.infrastructure.bootstrap.ResourceContextBootstrap;
@@ -30,6 +30,7 @@ import online.yudream.voxelith.tile.infrastructure.image.CatalogTexturePixelSour
 import online.yudream.voxelith.world.application.WorldBlockAccess;
 import online.yudream.voxelith.world.domain.world.MapArtFrame;
 import online.yudream.voxelith.world.infrastructure.anvil.AnvilMapArtReader;
+import online.yudream.voxelith.world.infrastructure.anvil.AnvilEntityReader;
 import online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -176,8 +177,12 @@ public final class RenderMapCli {
             MapArtInjector mapArt = new MapArtInjector(pixelSource);
             MeshesAndMapArt prepared = injectMapArt(options, regionWindow, meshes, mapArt, out);
             meshes = prepared.meshes();
+            // 实体几何（盔甲架等）：贴图链 catalog → mapArt → entityInjector，
+            // tile 用最外层，内置贴图才会进图集
+            EntityInjector entities = new EntityInjector(mapArt);
+            meshes = injectEntities(options, regionWindow, meshes, entities, out);
 
-            GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(catalog, mapArt);
+            GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(catalog, entities);
             long tTile = System.currentTimeMillis();
             // 共享图集：瓦片只带 UV，不再每片内嵌 1.7MB 图集（前端挂清单 atlas 那张共享纹理）
             TileOutcome hires = tiles.generate(new TileCommand(meshes, options.workDir(),
@@ -328,6 +333,34 @@ public final class RenderMapCli {
 
     /** 注入地图画后的网格表 + 统计。 */
     private record MeshesAndMapArt(Map<ChunkPos, BakedChunkMeshData> meshes, int frames, int maps) {
+    }
+
+    /**
+     * 读窗口内全部放置实体（当前支持盔甲架）→ 生成简化盒体几何 → 注入对应区块。
+     *
+     * <p>实体不在方块数据里，纯方块渲染看不到；这里与地图画同一条思路：读实体 NBT，
+     * 生成几何补进瓦片。贴图用内置木纹，因此与资源包/版本无关。</p>
+     */
+    private static Map<ChunkPos, BakedChunkMeshData> injectEntities(RenderMapOptions options,
+                                                                    List<int[]> regionWindow,
+                                                                    Map<ChunkPos, BakedChunkMeshData> meshes,
+                                                                    EntityInjector injector,
+                                                                    PrintStream out) {
+        AnvilEntityReader reader = AnvilEntityReader.of(options.worldDir(), options.dimension());
+        List<online.yudream.voxelith.world.domain.world.PlacedEntity> entities = new ArrayList<>();
+        for (int[] region : regionWindow) {
+            entities.addAll(reader.entities(new RegionPos(region[0], region[1])));
+        }
+        if (entities.isEmpty()) {
+            return meshes;
+        }
+        Map<ChunkPos, BakedChunkMeshData> injected = injector.inject(entities, meshes);
+        long armorStands = entities.stream()
+                .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                .count();
+        out.printf("%n实体几何：盔甲架 %d 个（简化盒体，含小型/手臂/底座与朝向），已补入瓦片几何%n",
+                armorStands);
+        return injected;
     }
 
     /**
@@ -710,15 +743,33 @@ public final class RenderMapCli {
                 chunks.size(), batches.size(), options.batchChunks());
 
         MapArtInjector mapArt = new MapArtInjector(new CatalogTexturePixelSource(catalog));
+        EntityInjector entityInjector = new EntityInjector(mapArt);
         Set<String> textures = new TreeSet<>(prebaked == null ? Set.of() : prebaked.textures());
         List<MapArtFrame> frames = readMapArt(options, mapArt, allRegionWindows(batches), out);
+        AnvilEntityReader entityReader = AnvilEntityReader.of(options.worldDir(), options.dimension());
+        List<online.yudream.voxelith.world.domain.world.PlacedEntity> entities = new ArrayList<>();
+        for (Batch batch : batches) {
+            for (RegionPos region : batch.regions()) {
+                entities.addAll(entityReader.entities(region));
+            }
+        }
+        if (!entities.isEmpty()) {
+            out.printf("实体几何：盔甲架 %d 个将在各批注入（贴图用内置木纹）%n",
+                    entities.stream()
+                            .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                            .count());
+        }
         // 静态解析（无采集产物）时贴图表拿不到，只能靠「用到的都在里面」这一超集兜底：
         // 记下提示，让用户知道缺贴图的可能来源
         if (prebaked == null) {
             out.println("  注意：没有采集产物（models.json.gz），共享图集无法预知全部贴图；"
                     + "缺贴图的方块会落品红兜底格");
         }
-        GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(catalog, mapArt);
+        // 地图画与实体内置贴图是运行时注册的，采集产物里当然没有——必须并进预打包清单，
+        // 否则多遍渲染时这些面会落品红兜底格（曾经就是这样：单遍正常、分遍变紫）
+        textures.addAll(mapArt.textureIds());
+        textures.addAll(entityInjector.textureIds());
+        GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(catalog, entityInjector);
         AtlasReuse atlas = tiles.packSharedAtlas(options.workDir(), textures);
         out.printf("共享图集已就绪：%d 格（%d px），%d 批全部复用它%n",
                 atlas.layout().cellIndex().size(), atlas.layout().pixelSize(), batches.size());
@@ -754,6 +805,14 @@ public final class RenderMapCli {
                 List<MapArtFrame> batchFrames = framesInBatch(frames, batch);
                 if (!batchFrames.isEmpty()) {
                     meshes = mapArt.inject(batchFrames, meshes);
+                }
+            }
+            // 实体几何：同样只注入落在本批区块里的（贴图已在共享图集里备好）
+            if (!entities.isEmpty()) {
+                List<online.yudream.voxelith.world.domain.world.PlacedEntity> batchEntities =
+                        entitiesInBatch(entities, batch);
+                if (!batchEntities.isEmpty()) {
+                    meshes = entityInjector.inject(batchEntities, meshes);
                 }
             }
             TileOutcome hires = tiles.generate(new TileCommand(
@@ -806,6 +865,24 @@ public final class RenderMapCli {
         for (MapArtFrame frame : frames) {
             if (keys.contains(chunkKey(frame.x() >> 4, frame.z() >> 4))) {
                 result.add(frame);
+            }
+        }
+        return result;
+    }
+
+    /** 本批要注入的实体：位置落在本批区块集合里的（与地图画同判据，用 floor 而非 >>）。 */
+    private static List<online.yudream.voxelith.world.domain.world.PlacedEntity> entitiesInBatch(
+            List<online.yudream.voxelith.world.domain.world.PlacedEntity> entities, Batch batch) {
+        Set<Long> keys = new HashSet<>();
+        for (ChunkPos pos : batch.chunks()) {
+            keys.add(chunkKey(pos.x(), pos.z()));
+        }
+        List<online.yudream.voxelith.world.domain.world.PlacedEntity> result = new ArrayList<>();
+        for (online.yudream.voxelith.world.domain.world.PlacedEntity entity : entities) {
+            int cx = Math.floorDiv((int) Math.floor(entity.x()), 16);
+            int cz = Math.floorDiv((int) Math.floor(entity.z()), 16);
+            if (keys.contains(chunkKey(cx, cz))) {
+                result.add(entity);
             }
         }
         return result;

@@ -136,6 +136,30 @@ class GenerateLodPyramidUseCaseTest {
     }
 
     @Test
+    void entityGeometryIsExcludedFromSurfaceHeightfield() {
+        RecordingEncoder encoder = new RecordingEncoder();
+        GenerateLodPyramidUseCase useCase =
+                new GenerateLodPyramidUseCase(graySampler(), exporter(encoder));
+
+        // 盔甲架的底座顶面：朝上、投影面积 0.5625（过 0.5 的线），但它是实体几何。
+        // 不排除的话地表高度会被抬到实体所在的 y，航拍色也会变成实体贴图。
+        float[] baseTop = {0, 201, 0, 0.75f, 201, 0, 0.75f, 201, 0.75f, 0, 201, 0.75f};
+        BakedQuadData armorStandTop = new BakedQuadData(baseTop, new float[8],
+                new float[]{0, 1, 0}, "voxelith:entity/armor_stand", -1, true,
+                BakedQuadData.NON_TERRAIN_FACE, -1,
+                new byte[4], new byte[4], new byte[4], false);
+
+        InMemoryHeightfieldStore store = new InMemoryHeightfieldStore();
+        useCase.generate(new LodCommand(meshes(
+                quad(0, 64, 0, new float[]{0, 1, 0}, "minecraft:block/stone", -1),
+                armorStandTop
+        ), Path.of("build/lod-test"), 0, store, List.of()));
+
+        assertThat(store.field.topY(0, 0)).as("地表高度仍是方块，不被实体抬高").isEqualTo(64f);
+        assertThat(store.field.topY(0, 0)).isNotEqualTo(201f);
+    }
+
+    @Test
     void missingTextureFallsBackToWhite() {
         RecordingEncoder encoder = new RecordingEncoder();
         GenerateLodPyramidUseCase useCase =

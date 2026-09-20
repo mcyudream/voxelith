@@ -69,6 +69,16 @@ public final class MapArtInjector implements TexturePixelSource {
         return registeredMaps;
     }
 
+    /**
+     * 本注入器供给的全部贴图 id（地图 + 空框）。
+     *
+     * <p>多遍渲染会**先打一张共享图集供各批复用**，而那张图集的贴图清单来自采集产物；
+     * 地图与空框是运行时才注册的，必须显式并进去，否则这些面会落进品红兜底格。</p>
+     */
+    public List<String> textureIds() {
+        return List.copyOf(mapTextures.keySet());
+    }
+
     /** 上一次注入中「展示了框体、但没有地图贴图」的数量。 */
     public int framesWithoutMap() {
         return lastFramesWithoutMap;
@@ -190,7 +200,9 @@ public final class MapArtInjector implements TexturePixelSource {
         }
         // v 向下增大（图集行序）：左下 v=16、左上 v=0
         float[] uvs = {0, 16, 16, 16, 16, 0, 0, 0};
-        byte[] sky = {(byte) (15 * 17), (byte) (15 * 17), (byte) (15 * 17), (byte) (15 * 17)};
+        // skyLight 的约定是**原始等级 0..15**（TileMeshAssembler 再 ×17 打包成 ubyte）；
+        // 这里若写 15×17=255 会被二次相乘溢出成 239（约 94% 亮度），展示框会偏暗。
+        byte[] sky = {15, 15, 15, 15};
         byte[] zero = {0, 0, 0, 0};
         return new BakedQuadData(positions, uvs, dir.clone(), textureId,
                 -1, true, frame.facing(), -1, sky, zero, zero, false);

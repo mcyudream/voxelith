@@ -70,6 +70,8 @@ public final class AnvilMapArtReader implements MapArtReader {
     private final Path worldRoot;
     /** 维度目录：{@code region/} 与 {@code entities/} 在这里（主世界 = 存档根）。 */
     private final Path dimensionRoot;
+    /** 实体来源（与实体几何读取共用一份实现）。 */
+    private final AnvilEntitySource entities;
     private final NbtReader nbt = new NbtReader();
 
     /** 兼容构造：主世界（维度目录 = 存档根）。 */
@@ -84,6 +86,7 @@ public final class AnvilMapArtReader implements MapArtReader {
     public AnvilMapArtReader(Path worldRoot, Path dimensionRoot) {
         this.worldRoot = worldRoot;
         this.dimensionRoot = dimensionRoot;
+        this.entities = new AnvilEntitySource(dimensionRoot);
     }
 
     /** 组合根入口：按维度 id 自动定位维度目录（下界/末地的地图画也能读到）。 */
@@ -94,43 +97,10 @@ public final class AnvilMapArtReader implements MapArtReader {
     @Override
     public List<MapArtFrame> frames(RegionPos region) {
         List<MapArtFrame> frames = new ArrayList<>();
-        // Paper：实体单独存
-        Path entitiesFile = dimensionRoot.resolve("entities")
-                .resolve("r." + region.x() + "." + region.z() + ".mca");
-        readFrames(entitiesFile, frames, true);
-        // 原版：实体在区块 NBT 的 entities 列表里
-        readFrames(regionFile(region), frames, false);
+        for (CompoundTag entity : entities.entities(region)) {
+            frameOf(entity).ifPresent(frames::add);
+        }
         return List.copyOf(frames);
-    }
-
-    private Path regionFile(RegionPos region) {
-        return dimensionRoot.resolve("region").resolve("r." + region.x() + "." + region.z() + ".mca");
-    }
-
-    private void readFrames(Path file, List<MapArtFrame> out, boolean paperEntitiesFile) {
-        if (!Files.isRegularFile(file)) {
-            return;
-        }
-        try (AnvilRegionReader reader = new AnvilRegionReader(file)) {
-            for (AnvilRegionReader.ChunkEntry entry : reader.listChunks()) {
-                Optional<byte[]> payload = reader.readChunkPayload(entry.localX(), entry.localZ());
-                if (payload.isEmpty()) {
-                    continue;
-                }
-                CompoundTag root = nbt.readNamedRootAuto(payload.get());
-                // Paper 的 entities 文件用 Entities，原版区块 NBT 用 entities
-                String key = root.contains("Entities") ? "Entities" : root.contains("entities") ? "entities" : null;
-                if (key == null) {
-                    continue;
-                }
-                ListTag list = root.getList(key);
-                for (int i = 0; i < list.size(); i++) {
-                    frameOf(list.getCompound(i)).ifPresent(out::add);
-                }
-            }
-        } catch (RuntimeException e) {
-            throw new IllegalStateException("解析展示框失败: " + file, e);
-        }
     }
 
     private Optional<MapArtFrame> frameOf(CompoundTag entity) {

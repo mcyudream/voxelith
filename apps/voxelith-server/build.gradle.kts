@@ -128,8 +128,16 @@ tasks.register<JavaExec>("renderMap") {
         option("max-x", "maxX")
         option("min-z", "minZ")
         option("max-z", "maxZ")
+
+        // 大窗口的两个开关：maxChunks 是「超过就拒绝」的护栏，
+        // batchChunks 是「超过就切批」的开关（切批依赖采集产物，否则退回单遍）
+        option("max-chunks", "maxChunks")
+        option("batch-chunks", "batchChunks")
         if (providers.gradleProperty("noLodAtlas").orNull == "true") {
             add("--no-lod-atlas")
+        }
+        if (providers.gradleProperty("noMeshopt").orNull == "true") {
+            add("--no-meshopt")
         }
         option("mc-version", "mcVersion")
         option("loader-version", "loaderVersion")
