@@ -10,7 +10,11 @@ import java.util.List;
  * @param atlasFile    图集 PNG 落盘路径
  * @param reportFile   报告落盘路径
  * @param textureCount 入集贴图数（含兜底格）
- * @param atlasSize    图集边长（像素）
+ * @param atlasSize    图集宽（像素）
+ * @param atlasHeight  图集高（像素）。等于 atlasSize 表示正方形（全量打包）；
+ *                     增量扩图集向下加行后 height 会大于宽——清单必须如实带上，
+ *                     否则图集 PNG 与清单声明的尺寸对不上（审计会判 error，
+ *                     外部消费者也会按错误的宽高算 UV）
  * @param missingTextures 模型引用、但资源包里找不到的贴图 id（会用品红兜底格渲染）。
  *                        典型的成因是「资源包版本与世界版本不匹配」——比如 1.20.3 起
  *                        {@code grass} 改名为 {@code short_grass}，拿 1.20.1 的资源包解析
@@ -18,11 +22,19 @@ import java.util.List;
  * @param untexturedQuads 连贴图 id 都没有的面（模型本身没引用贴图）；同样落到第 0 格兜底
  */
 public record TileOutcome(List<TileSummary> tiles, Path atlasFile, Path reportFile,
-                          int textureCount, int atlasSize,
+                          int textureCount, int atlasSize, int atlasHeight,
                           List<String> missingTextures, int untexturedQuads) {
 
     public TileOutcome {
         missingTextures = missingTextures == null ? List.of() : List.copyOf(missingTextures);
+    }
+
+    /** 兼容构造：正方形图集（一期格式与老调用方）。 */
+    public TileOutcome(List<TileSummary> tiles, Path atlasFile, Path reportFile,
+                       int textureCount, int atlasSize,
+                       List<String> missingTextures, int untexturedQuads) {
+        this(tiles, atlasFile, reportFile, textureCount, atlasSize, atlasSize,
+                missingTextures, untexturedQuads);
     }
 
     public record TileSummary(TilePos pos, int quads, int vertices, int bytes, String sha1,

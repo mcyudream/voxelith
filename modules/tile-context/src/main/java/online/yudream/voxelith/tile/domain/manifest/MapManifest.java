@@ -22,6 +22,17 @@ public record MapManifest(int formatVersion, String mapId, String name, String v
                 atlas, tiles, List.of());
     }
 
+    /**
+     * 只替换图集引用（增量扩图集改了图集尺寸时用）。
+     *
+     * <p>图集变成非正方形后必须让清单跟上：否则 PNG 与清单声明的宽高对不上，
+     * 审计会判 error，外部消费者（3D Tiles、第三方查看器）也会按错误尺寸算 UV。</p>
+     */
+    public MapManifest withAtlas(AtlasRef next) {
+        return new MapManifest(formatVersion, mapId, name, version, generatedAt, settings,
+                boundsMin, boundsMax, next, tiles, lodAtlases);
+    }
+
     /** @param hiresTileSize hires 瓦片边长（方块数） @param lodCount LOD 层级数（一期恒为 1，仅 hires） */
     public record Settings(int hiresTileSize, int lodCount) {
     }

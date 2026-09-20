@@ -5,12 +5,15 @@ import online.yudream.voxelith.tile.domain.atlas.AtlasLayout;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
 import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
+import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestStore;
+import online.yudream.voxelith.tile.domain.manifest.MapManifest;
 import online.yudream.voxelith.tile.infrastructure.image.PngImageCodec;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +85,57 @@ class EnsureAtlasCapacityUseCaseTest {
         int[] pixelsOut = new PngImageCodec().decodePng(reloaded.png());
         assertThat(pixelsOut[3 * CELL]).isEqualTo(0xFF00FF00);
         assertThat(pixelsOut[1 * CELL]).isEqualTo(0xFF335577);   // 老格子的像素来自已发布图集
+    }
+
+    /**
+     * 回归：扩容会改变图集尺寸（向下加行 → 非正方形），清单里的 `atlas` 必须跟着更新，
+     * 否则 PNG 与清单声明不一致，`voxelith-forge audit` 会误判
+     * {@code atlas-size-mismatch}（渲染其实是对的）。
+     */
+    @Test
+    @DisplayName("扩容后同步清单里的图集宽高（清单存在时）")
+    void expansionSyncsManifestAtlasRef(@TempDir Path publishRoot) {
+        FilePublishedAtlas published = new FilePublishedAtlas(publishRoot);
+        FileManifestStore manifests = new FileManifestStore(publishRoot);
+        AtlasLayout before = publishedLayout();
+        published.save("m", new online.yudream.voxelith.tile.domain.atlas.AtlasPacker.AtlasResult(
+                before, before.width(), new int[before.width() * before.height()]), publishedPng());
+        manifests.save("m", manifestWithAtlas(before.width(), before.height(), before.cellIndex().size()));
+
+        TexturePixelSource pixels = id -> Optional.of(texture(id.toString(), 0xFF00FF00));
+        EnsureAtlasCapacityUseCase useCase = new EnsureAtlasCapacityUseCase(
+                published, manifests, pixels, new PngImageCodec());
+
+        // 16 格已用满，再加两片（序号 16、17 落在第 5 行）→ 高度从 64 长到 80
+        Map<String, Integer> cells = new LinkedHashMap<>();
+        for (int i = 0; i < 16; i++) {
+            cells.put("t" + i, i);
+        }
+        AtlasLayout full = new AtlasLayout(CELL, 4, 64, 64, cells);
+        published.save("m", new online.yudream.voxelith.tile.domain.atlas.AtlasPacker.AtlasResult(
+                full, full.width(), new int[64 * 64]), publishedPng());
+        manifests.save("m", manifestWithAtlas(64, 64, 16));
+
+        EnsureAtlasCapacityUseCase.Result result = useCase.ensure("m",
+                new AtlasReuse(full, publishedPng()),
+                List.of("mod:a", "mod:b"));
+
+        assertThat(result.expanded()).isTrue();
+        assertThat(result.atlas().layout().height()).isEqualTo(80);
+        MapManifest manifest = manifests.load("m").orElseThrow();
+        assertThat(manifest.atlas().size()).isEqualTo(64);
+        assertThat(manifest.atlas().height())
+                .as("清单必须报告非正方形图集的真实高度")
+                .isEqualTo(80);
+        assertThat(manifest.atlas().textureCount()).isEqualTo(18);
+    }
+
+    private static MapManifest manifestWithAtlas(int width, int height, int textureCount) {
+        return new MapManifest(1, "m", "m", "v1", Instant.now().toString(),
+                new MapManifest.Settings(32, 2),
+                new float[]{0, 0, 0}, new float[]{64, 64, 64},
+                new MapManifest.AtlasRef("atlas.png", width, textureCount, height),
+                List.of());
     }
 
     @Test

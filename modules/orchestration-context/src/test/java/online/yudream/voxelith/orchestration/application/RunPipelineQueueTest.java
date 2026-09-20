@@ -97,7 +97,7 @@ class RunPipelineQueueTest {
         // 模拟另一台机器先跑掉两片：入队 → 领取 → 执行 → 回填
         queue.enqueue(PipelineStage.BAKE, REGIONS);
         for (String shard : List.of("r.0.0", "r.0.1")) {
-            queue.claim("remote#0", java.time.Duration.ofMinutes(5)).orElseThrow();
+            queue.claim("remote#0", java.time.Duration.ofMinutes(5), PipelineStage.BAKE).orElseThrow();
             executed.add(shard);
             Files.createDirectories(runDir.resolve("tiles"));
             Files.write(runDir.resolve("tiles/" + shard + ".done"), new byte[0]);
@@ -163,5 +163,39 @@ class RunPipelineQueueTest {
 
         assertThat(resumed.finished()).isTrue();
         assertThat(executed).containsExactly("r.1.1");
+    }
+
+    /**
+     * 回归：远端 worker 把产物写在与 runDir 不同的根下（跨进程部署的常态）时，
+     * 调度方不能把队列里的 DONE 当成「产物丢失」而重跑。
+     */
+    @Test
+    @DisplayName("产物基准目录可指定：远端写在别处也被认账，不重复执行")
+    void artifactRootSupportsRemoteWorkers(@TempDir Path remoteRoot) throws Exception {
+        FileShardQueue queue = new FileShardQueue(queueDir);
+        // 模拟远端 worker：入队 → 领取 → 把产物写进 remoteRoot（不是 runDir）→ 回填相对路径
+        queue.enqueue(PipelineStage.BAKE, REGIONS);
+        for (String shard : REGIONS) {
+            queue.claim("remote#0", java.time.Duration.ofMinutes(5), PipelineStage.BAKE).orElseThrow();
+            Files.createDirectories(remoteRoot.resolve("tiles"));
+            Files.write(remoteRoot.resolve("tiles/" + shard + ".done"), new byte[0]);
+            queue.complete(PipelineStage.BAKE, shard, List.of("tiles/" + shard + ".done"));
+        }
+
+        Set<String> executed = ConcurrentHashMap.newKeySet();
+        Map<PipelineStage, PipelineStageExecutor> plain = new EnumMap<>(PipelineStage.class);
+        for (PipelineStage stage : PipelineStage.ordered()) {
+            plain.put(stage, (s, dir) -> List.of());
+        }
+        Map<PipelineStage, ShardedStageExecutor> shardedMap = new EnumMap<>(PipelineStage.class);
+        shardedMap.put(PipelineStage.BAKE, bakeShards(executed, Set.of()));
+        RunPipelineUseCase useCase = new RunPipelineUseCase(new JsonPipelineCheckpointStore(),
+                plain, shardedMap, queue, 1, remoteRoot);
+
+        PipelineRun run = useCase.run(runDir, "run-1", "swust");
+
+        assertThat(run.finished()).isTrue();
+        assertThat(executed).as("远端已经跑完的分片不该被本地重跑").isEmpty();
+        assertThat(run.stage(PipelineStage.BAKE).completedShards()).containsOnlyKeys(REGIONS);
     }
 }

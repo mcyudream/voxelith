@@ -39,4 +39,10 @@ class RegionIncrementalRenderAdapterTest {
         assertThat(tiles.getFirst()).isEqualTo(TilePos.hires(-16, -16));
         assertThat(tiles.getLast()).isEqualTo(TilePos.hires(-1, -1));
     }
+
+    /** 增量缺省的压缩开关与全量渲染一致（true），由组合根用 render.meshopt 覆盖。 */
+    @Test
+    void defaultMeshoptMatchesFullRender() {
+        assertThat(RegionIncrementalRenderAdapter.DEFAULT_MESHOPT).isTrue();
+    }
 }

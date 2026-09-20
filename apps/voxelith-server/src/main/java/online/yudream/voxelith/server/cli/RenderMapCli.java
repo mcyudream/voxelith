@@ -200,7 +200,7 @@ public final class RenderMapCli {
             all.addAll(pyramid.tiles());
             TileOutcome merged = new TileOutcome(
                     all, hires.atlasFile(), hires.reportFile(),
-                    hires.textureCount(), hires.atlasSize(),
+                    hires.textureCount(), hires.atlasSize(), hires.atlasHeight(),
                     hires.missingTextures(), hires.untexturedQuads());
             MapManifest manifest = TileContextBootstrap.openPublisher().publish(
                     options.mapId(), options.mapName(), options.workDir(), merged,
@@ -644,6 +644,7 @@ public final class RenderMapCli {
                 options.workDir().resolve("tile-report.json"),
                 atlas.layout().cellIndex().size(),
                 atlas.layout().pixelSize(),
+                atlas.layout().height(),
                 List.copyOf(new TreeSet<>(missingTextures)),
                 untextured);
         out.printf("合并发布：hires 瓦片 %d，LOD 瓦片 %d%n",

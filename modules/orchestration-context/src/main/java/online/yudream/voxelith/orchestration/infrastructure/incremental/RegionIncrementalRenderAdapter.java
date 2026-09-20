@@ -47,6 +47,13 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
     /** 可选：增量扩图集（缺贴图时把新贴图追加进已发布图集）。null = 不扩容（新贴图落兜底格）。 */
     private final EnsureAtlasCapacityUseCase atlasExpander;
     private final HeightfieldStore heightfield;
+    /**
+     * 增量瓦片是否启用 meshopt 熵编码。
+     *
+     * <p>编码选项整体在 {@code TileCommand.incremental(...)} 里组装（application 层）——
+     * 编排域不能直接引用 tile.domain 的 {@code EncodeOptions}（ArchUnit 守护）。</p>
+     */
+    private final boolean meshopt;
     /** 发布地图根（{publishDir}/{mapId}），瓦片直接覆盖已发布 glb。 */
     private final Path mapDir;
 
@@ -68,6 +75,22 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
                                           EnsureAtlasCapacityUseCase atlasExpander,
                                           HeightfieldStore heightfield,
                                           Path mapDir) {
+        this(world, bake, tiles, lod, atlas, atlasExpander, heightfield, mapDir,
+                DEFAULT_MESHOPT);
+    }
+
+    /**
+     * @param meshopt 增量瓦片是否启用 meshopt 熵编码（与全量渲染的 {@code render.meshopt} 同源）
+     */
+    public RegionIncrementalRenderAdapter(WorldBlockAccess world,
+                                          BakeChunksUseCase bake,
+                                          GenerateTilesUseCase tiles,
+                                          GenerateLodPyramidUseCase lod,
+                                          PublishedAtlas atlas,
+                                          EnsureAtlasCapacityUseCase atlasExpander,
+                                          HeightfieldStore heightfield,
+                                          Path mapDir,
+                                          boolean meshopt) {
         this.world = world;
         this.bake = bake;
         this.tiles = tiles;
@@ -76,6 +99,15 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
         this.atlasExpander = atlasExpander;
         this.heightfield = heightfield;
         this.mapDir = mapDir;
+        this.meshopt = meshopt;
+    }
+
+    /** 增量瓦片的默认压缩开关（与全量渲染一致）。 */
+    public static final boolean DEFAULT_MESHOPT = true;
+
+    /** 当前是否启用 meshopt（组合根与测试用来核对增量与全量是否一致）。 */
+    public boolean meshopt() {
+        return meshopt;
     }
 
     @Override
@@ -101,7 +133,10 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
             for (TilePos expected : expectedHiresTiles(region)) {
                 sha1ByUrl.put(urlOf(expected), "");
             }
-            TileOutcome hires = tiles.generate(new TileCommand(meshes, outputDir, reuse));
+            // 编码选项在 tile 的 application 层组装：共享图集（不内嵌 PNG）+ 可选 meshopt，
+            // 与全量渲染同款；此前默认 uncompressed 让增量瓦片大一个数量级
+            TileOutcome hires = tiles.generate(
+                    TileCommand.incremental(meshes, outputDir, reuse, meshopt));
             for (TileOutcome.TileSummary summary : hires.tiles()) {
                 recordSummary(sha1ByUrl, inserts, summary);
             }

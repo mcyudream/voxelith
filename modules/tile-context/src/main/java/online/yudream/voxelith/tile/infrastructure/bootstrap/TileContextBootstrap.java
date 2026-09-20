@@ -10,6 +10,7 @@ import online.yudream.voxelith.tile.application.VertexColorTileExporter;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
 import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestPublisher;
+import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestStore;
 import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileTileArtifactSink;
 import online.yudream.voxelith.tile.infrastructure.glb.GlbTileEncoder;
@@ -81,6 +82,7 @@ public final class TileContextBootstrap {
                                                                 ResolvedResourceCatalog catalog) {
         return new EnsureAtlasCapacityUseCase(
                 openPublishedAtlas(publishRoot),
+                new FileManifestStore(publishRoot),
                 new CatalogTexturePixelSource(catalog),
                 new PngImageCodec());
     }

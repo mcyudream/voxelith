@@ -49,8 +49,11 @@ public record EncodeOptions(boolean quantize, boolean linearFilter, boolean embe
     }
 
     /**
-     * 生产档：量化 + meshopt 熵编码 + 不内嵌图集。
-     * glb 只留量化后的顶点位流与索引位流，贴图由清单的共享图集提供。
+     * 「量化 + meshopt + 不内嵌图集」的组合档。
+     *
+     * <p>注意与全量渲染实际用的 {@code sharedAtlas().withMeshopt(...)} 的区别：这一档会改
+     * 顶点属性类型（i16/i8/u16 + {@code KHR_mesh_quantization}），前端必须支持量化扩展；
+     * 产线目前只用它做压缩率对照与测试（见 GlbTileEncoderMeshoptTest）。</p>
      */
     public static EncodeOptions compressed() {
         return new EncodeOptions(true, false, false, true);

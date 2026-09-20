@@ -49,4 +49,15 @@ public record ShardJob(PipelineStage stage, String shard, ShardJobState state, S
     public boolean pending(long nowEpochMs) {
         return state == ShardJobState.QUEUED || leaseExpired(nowEpochMs);
     }
+
+    /**
+     * 是否已进入终态（DONE/FAILED）。
+     *
+     * <p>与 {@link #pending(long)} 的区别很关键：正在被别的 worker 执行（CLAIMED 且租约有效）
+     * 既不是 pending、也不是 terminal——等待方必须把它当作「还要等」，
+     * 否则会在别人干活时提前收工（阶段被误判完成）。</p>
+     */
+    public boolean terminal() {
+        return state == ShardJobState.DONE || state == ShardJobState.FAILED;
+    }
 }

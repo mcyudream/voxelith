@@ -44,6 +44,10 @@ import java.util.Map;
  * worker 是**增量/补片**的执行端——把一件大事拆成按 region 的分片，谁空谁领。
  * 调度侧（例如服务端或 {@code RunPipelineUseCase} 的队列模式）只负责入队与收尾。</p>
  *
+ * <p><b>产物路径基准</b>：worker 把瓦片直接写进 {@code publishDir/{mapId}}，回填给队列的
+ * 也是相对该目录的路径。调度侧如果用自己的 runDir 校验产物存在性，会误判「产物丢失」——
+ * 跨进程部署时请让 {@code RunPipelineUseCase} 的 {@code artifactRoot} 指向同一个地图目录。</p>
+ *
  * <p>用法：</p>
  * <pre>
  * gradle :apps:voxelith-server:shardWorker -PworldDir=&lt;存档&gt; -PmapId=&lt;地图&gt; \

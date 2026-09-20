@@ -4,8 +4,10 @@ import online.yudream.voxelith.sharedkernel.vo.Identifier;
 import online.yudream.voxelith.sharedkernel.vo.MissingTexture;
 import online.yudream.voxelith.tile.domain.atlas.AtlasExpander;
 import online.yudream.voxelith.tile.domain.atlas.AtlasPacker;
+import online.yudream.voxelith.tile.domain.atlas.AtlasLayout;
 import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
+import online.yudream.voxelith.tile.domain.manifest.MapManifest;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -34,13 +36,25 @@ public class EnsureAtlasCapacityUseCase {
     }
 
     private final PublishedAtlas published;
+    /**
+     * 清单仓储：扩容会改变图集尺寸，必须同步清单里的 `atlas` 引用
+     * （否则 PNG 与清单声明的宽高对不上，审计直接判 error）。
+     * 传 null 表示不做清单同步（只写图集的场景，例如单元测试）。
+     */
+    private final ManifestStore manifestStore;
     private final TexturePixelSource pixelSource;
     private final ImageCodec imageCodec;
     private final AtlasExpander expander = new AtlasExpander();
 
     public EnsureAtlasCapacityUseCase(PublishedAtlas published, TexturePixelSource pixelSource,
                                       ImageCodec imageCodec) {
+        this(published, null, pixelSource, imageCodec);
+    }
+
+    public EnsureAtlasCapacityUseCase(PublishedAtlas published, ManifestStore manifestStore,
+                                      TexturePixelSource pixelSource, ImageCodec imageCodec) {
         this.published = published;
+        this.manifestStore = manifestStore;
         this.pixelSource = pixelSource;
         this.imageCodec = imageCodec;
     }
@@ -93,7 +107,21 @@ public class EnsureAtlasCapacityUseCase {
         AtlasPacker.AtlasResult atlasResult = new AtlasPacker.AtlasResult(
                 expansion.layout(), expansion.layout().width(), expansion.argb());
         published.save(mapId, atlasResult, png);
+        syncManifestAtlas(mapId, expansion.layout());
         return new Result(new AtlasReuse(expansion.layout(), png),
                 expansion.added(), List.copyOf(missing), true);
+    }
+
+    /** 清单里的图集宽高对齐到扩容后的布局（清单不存在时静默跳过：还没发布过）。 */
+    private void syncManifestAtlas(String mapId, AtlasLayout layout) {
+        if (manifestStore == null) {
+            return;
+        }
+        manifestStore.load(mapId).ifPresent(manifest -> manifestStore.save(mapId,
+                manifest.withAtlas(new MapManifest.AtlasRef(
+                        manifest.atlas().url(),
+                        layout.width(),
+                        layout.cellIndex().size(),
+                        layout.height()))));
     }
 }

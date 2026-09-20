@@ -39,7 +39,7 @@ VMC 是一个类 BlueMap 的 Minecraft Web 地图渲染系统：
 - **分布式分片**：region 分片进共享队列（文件系统租约，无中间件），多进程/多机抢同一批分片；worker 崩溃后租约到期自动回收，产物路径回填后本地检查点继续续跑。
 - **对象存储变更检测**：S3/MinIO/R2 上没有 inotify，改按 `poll-seconds` 轮询 ETag 比对，变更的 region 自动镜像到本地再触发增量。
 - **几何压缩实测**：64×64 网格瓦片 BIN 从 258 856 B（float32）→ 191 256 B（量化）→ 50 228 B（量化 + meshopt 熵编码，约 1/5）；索引流约 1 字节/三角。
-- **产物工具链**：`voxelith-forge` CLI 能对已发布目录做审计（清单 ↔ 盘上产物交叉校验，CI 可直接用退出码）、导出 OGC 3D Tiles 1.1 `tileset.json`、打成单个 `.vxtbundle` 归档；`.vxt` 单文件瓦片自带元数据与 sha1 自检。
+- **产物工具链**：`voxelith-forge` CLI 能对已发布目录做审计（清单 ↔ 盘上产物交叉校验，CI 可直接用退出码）、导出 OGC 3D Tiles 1.1 `tileset.json`、打成单个**自包含** `.vxtbundle`（瓦片 + 清单 + 图集 + LOD 图集页）；`.vxt` 单文件瓦片自带元数据与 sha1 自检。
 - **远景增强**：`voxelith-skyline` 用 LOD 图集页直接铺「天际线平面地毯」（不再下载远处 glb），配合层带滞回与远景雾化，让地平线不抖、边缘不硬切；应用壳里有「远景天际线（实验）」开关，默认关。
 - **实测规模**：西南科大全校 20769 瓦片、默认存档 7866 区块已全量渲染发布，浏览器全图 67 次 draw call。
 
@@ -250,6 +250,11 @@ yudream:
 
 完整字段（五种类型 + 样式 + 视距剔除规则）见 [docs/protocol/markers-json.md](docs/protocol/markers-json.md)。
 
+> ⚠️ **部署提示**：服务端不内置鉴权——`/api/uploads/**`（上传存档与解包）、
+> `/api/render/jobs`（触发渲染）、`PUT /api/maps/{id}/markers`、`DELETE /api/maps/{id}`
+> 任何人都能调用（设计前提是「本机 / 内网自用」）。要放到公网请在反向代理上加认证与访问控制，
+> 并限制上传体积；CORS 只放行了 localhost 的 Vite 开发源，生产同源托管无需改这里。
+
 ### 前端：开发调试
 
 ```bash
@@ -367,6 +372,7 @@ pnpm --filter @yudream/voxelith-forge exec node dist/cli.js audit --map-dir ./da
 pnpm --filter @yudream/voxelith-forge exec node dist/cli.js stats --map-dir ./data/maps/swust
 pnpm --filter @yudream/voxelith-forge exec node dist/cli.js ext   --map-dir ./data/maps/swust
 # 导出 3D Tiles（Cesium 等可直接加载）；打包成单个 .vxtbundle 供离线分发
+# （默认把清单/图集/LOD 图集页一起打进去，落地即自包含；--no-assets 可只打瓦片）
 pnpm --filter @yudream/voxelith-forge exec node dist/cli.js tileset \
     --map-dir ./data/maps/swust --out tileset.json --lon 104.06 --lat 30.67
 pnpm --filter @yudream/voxelith-forge exec node dist/cli.js pack \

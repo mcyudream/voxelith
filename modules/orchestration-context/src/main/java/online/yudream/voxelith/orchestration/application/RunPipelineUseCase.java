@@ -14,8 +14,10 @@ import online.yudream.voxelith.orchestration.domain.StageStatus;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 管线运行用例：按 resolve→scan→bake→tile→lod→manifest 顺序驱动各阶段，
@@ -32,6 +34,15 @@ public class RunPipelineUseCase {
     private final ShardQueuePort queue;
     private final ShardWorkerPool workerPool;
     private final int workers;
+    /**
+     * 队列模式下校验作业产物是否存在时使用的基准目录；null = 用本次运行的 runDir。
+     *
+     * <p>远端 worker 回填的产物路径是**相对它自己写入的目录**的（例如发布目录
+     * {@code data/maps/{mapId}}），而调度进程的 runDir 可能是另一个工作目录。
+     * 两者不一致时，调度侧会误判「产物丢失」→ 清掉队列里的 DONE 记录并重跑，
+     * 白白丢掉别人已经做完的活。跨进程部署时把这里指向 worker 的写入根即可。</p>
+     */
+    private final Path artifactRoot;
 
     public RunPipelineUseCase(PipelineCheckpointStore checkpoints,
                               Map<PipelineStage, PipelineStageExecutor> executors) {
@@ -52,11 +63,22 @@ public class RunPipelineUseCase {
                               Map<PipelineStage, PipelineStageExecutor> executors,
                               Map<PipelineStage, ShardedStageExecutor> shardedExecutors,
                               ShardQueuePort queue, int workers) {
+        this(checkpoints, executors, shardedExecutors, queue, workers, null);
+    }
+
+    /**
+     * @param artifactRoot 队列作业产物的基准目录；null = 用 runDir（本机同目录部署）
+     */
+    public RunPipelineUseCase(PipelineCheckpointStore checkpoints,
+                              Map<PipelineStage, PipelineStageExecutor> executors,
+                              Map<PipelineStage, ShardedStageExecutor> shardedExecutors,
+                              ShardQueuePort queue, int workers, Path artifactRoot) {
         this.checkpoints = checkpoints;
         this.executors = Map.copyOf(executors);
         this.shardedExecutors = Map.copyOf(shardedExecutors);
         this.queue = queue;
         this.workers = Math.max(1, workers);
+        this.artifactRoot = artifactRoot;
         this.workerPool = queue == null
                 ? null
                 : new ShardWorkerPool(queue, java.time.Duration.ofMinutes(30),
@@ -151,6 +173,8 @@ public class RunPipelineUseCase {
                                                ShardedStageExecutor executor, List<String> shards)
             throws Exception {
         StageState current = run.stage(stage);
+        // 队列作业的产物可能写在与 runDir 不同的根下（远端 worker 写进发布目录）
+        Path artifactBase = artifactRoot != null ? artifactRoot : runDir;
         Map<String, ShardJob> queued = new java.util.HashMap<>();
         for (ShardJob job : queue.jobs(stage)) {
             queued.put(job.shard(), job);
@@ -163,7 +187,7 @@ public class RunPipelineUseCase {
             // 产物没了（被清理/磁盘丢失）才回收重跑
             ShardJob job = queued.get(shard);
             boolean queueOk = job != null && job.state() == ShardJobState.DONE
-                    && artifactsIntact(runDir, job.artifacts());
+                    && artifactsIntact(artifactBase, job.artifacts());
             if (checkpointOk || queueOk) {
                 continue;
             }
@@ -181,15 +205,32 @@ public class RunPipelineUseCase {
 
         List<String> allArtifacts = new ArrayList<>();
         List<String> failures = new ArrayList<>();
+        List<String> unfinished = new ArrayList<>();
+        Set<String> recorded = new HashSet<>();
         for (ShardJob job : queue.jobs(stage)) {
+            recorded.add(job.shard());
             if (job.state() == ShardJobState.DONE) {
                 run = run.withStage(stage, run.stage(stage).withShardDone(job.shard(), job.artifacts()));
                 allArtifacts.addAll(job.artifacts());
             } else if (job.state() == ShardJobState.FAILED) {
                 failures.add(job.shard() + ": " + job.error());
+            } else {
+                // QUEUED / CLAIMED（别人还在跑）：绝不当成完成——
+                // 静默跳过会让阶段带着缺口的产物进入下一阶段
+                unfinished.add(job.shard() + "(" + job.state() + ")");
             }
         }
         checkpoints.save(runDir, run);
+        // 队列里根本没见到某个分片（作业文件被删/不可读）时同样不能收工：
+        // 阶段带着缺口的产物进入下一阶段比直接失败更难查
+        List<String> missing = shards.stream().filter(shard -> !recorded.contains(shard)).toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("队列里找不到这些分片（作业文件被删或不可读）: " + missing);
+        }
+        if (!unfinished.isEmpty()) {
+            throw new IllegalStateException("分片尚未完成（不应发生：等待逻辑结束后仍有未终态分片）: "
+                    + unfinished);
+        }
         if (!failures.isEmpty()) {
             throw new IllegalStateException("分片失败: " + failures);
         }

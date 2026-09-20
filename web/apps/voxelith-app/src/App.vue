@@ -293,6 +293,13 @@ function applySkyline(): void {
     opacity: 0.85,
   });
   engine.scene.add(skylineLayer.object3d);
+  if (skylineLayer.tileCount() === 0) {
+    // 这张图没有可用的 LOD 图集页（例如多遍渲染的产物）：远景没法用平面地毯替换，
+    // 这时**不加雾**——只把远处变淡却没有替代物，反而是一种可见的画质退化
+    skylineLayer.dispose();
+    skylineLayer = null;
+    return;
+  }
   // 雾从细节视距开始、到最远距离结束，让地毯接缝与地图外缘连续淡出
   skylineHaze = new SkylineHaze({
     color: new THREE.Color(0x87ceeb).getHex(),

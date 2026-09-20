@@ -73,32 +73,30 @@ public final class FileShardQueue implements ShardQueuePort {
     }
 
     @Override
-    public Optional<ShardJob> claim(String workerId, Duration lease) {
+    public Optional<ShardJob> claim(String workerId, Duration lease, PipelineStage stage) {
         long now = System.currentTimeMillis();
         // 租约时长由调用方决定（Worker 池默认 30 分钟）；这里只挡住 0/负值，
         // 免得写成「立刻过期」的作业让别人抢走正在跑的分片
         long leaseUntil = now + Math.max(1, lease.toMillis());
-        for (PipelineStage stage : PipelineStage.ordered()) {
-            Path dir = stageDir(stage);
-            if (!Files.isDirectory(dir)) {
+        // 只扫本阶段的目录：分片键（r.X.Z）在各阶段是重名的，越阶段领取等于抢错活
+        Path dir = stageDir(stage);
+        if (!Files.isDirectory(dir)) {
+            return Optional.empty();
+        }
+        for (Path file : listJobFiles(dir)) {
+            ShardJob job = readJob(file);
+            if (job == null || job.terminal()) {
                 continue;
             }
-            for (Path file : listJobFiles(dir)) {
-                ShardJob job = readJob(file);
-                if (job == null || job.state() == ShardJobState.DONE
-                        || job.state() == ShardJobState.FAILED) {
-                    continue;
-                }
-                if (job.state() == ShardJobState.CLAIMED && !job.leaseExpired(now)) {
-                    continue;
-                }
-                if (!acquireLock(lockFile(stage, job.shard()), job)) {
-                    continue;
-                }
-                ShardJob claimed = job.claimed(workerId, leaseUntil);
-                writeJob(file, claimed);
-                return Optional.of(claimed);
+            if (job.state() == ShardJobState.CLAIMED && !job.leaseExpired(now)) {
+                continue;
             }
+            if (!acquireLock(lockFile(stage, job.shard()), job)) {
+                continue;
+            }
+            ShardJob claimed = job.claimed(workerId, leaseUntil);
+            writeJob(file, claimed);
+            return Optional.of(claimed);
         }
         return Optional.empty();
     }
@@ -229,31 +227,46 @@ public final class FileShardQueue implements ShardQueuePort {
         if (!Files.isRegularFile(file)) {
             return null;
         }
-        try {
-            JsonObject json = JsonParser.parseString(
-                    Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
-            List<String> artifacts = new ArrayList<>();
-            if (json.has("artifacts")) {
-                for (JsonElement element : json.getAsJsonArray("artifacts")) {
-                    artifacts.add(element.getAsString());
+        // Windows 上「原子替换作业文件」的瞬间，并发读可能拿到共享冲突（AccessDenied）——
+        // 那是**瞬时**错误，绝不能让整个 worker 池炸掉。重试几次再放弃；
+        // 仍读不到（文件被人手工改坏/删除）就当这片不可读跳过。
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                JsonObject json = JsonParser.parseString(
+                        Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
+                List<String> artifacts = new ArrayList<>();
+                if (json.has("artifacts")) {
+                    for (JsonElement element : json.getAsJsonArray("artifacts")) {
+                        artifacts.add(element.getAsString());
+                    }
                 }
+                return new ShardJob(
+                        PipelineStage.valueOf(json.get("stage").getAsString()),
+                        json.get("shard").getAsString(),
+                        ShardJobState.valueOf(json.get("state").getAsString()),
+                        json.has("workerId") && !json.get("workerId").isJsonNull()
+                                ? json.get("workerId").getAsString() : null,
+                        json.has("leaseUntil") ? json.get("leaseUntil").getAsLong() : 0,
+                        json.has("attempts") ? json.get("attempts").getAsInt() : 0,
+                        artifacts,
+                        json.has("error") && !json.get("error").isJsonNull()
+                                ? json.get("error").getAsString() : null);
+            } catch (IOException e) {
+                sleepQuietly(attempt);
+            } catch (RuntimeException e) {
+                // 内容坏掉（JSON 截断/字段缺失）：重试也没用，当不可读跳过
+                return null;
             }
-            return new ShardJob(
-                    PipelineStage.valueOf(json.get("stage").getAsString()),
-                    json.get("shard").getAsString(),
-                    ShardJobState.valueOf(json.get("state").getAsString()),
-                    json.has("workerId") && !json.get("workerId").isJsonNull()
-                            ? json.get("workerId").getAsString() : null,
-                    json.has("leaseUntil") ? json.get("leaseUntil").getAsLong() : 0,
-                    json.has("attempts") ? json.get("attempts").getAsInt() : 0,
-                    artifacts,
-                    json.has("error") && !json.get("error").isJsonNull()
-                            ? json.get("error").getAsString() : null);
-        } catch (IOException e) {
-            throw new UncheckedIOException("读分片失败: " + file, e);
-        } catch (RuntimeException e) {
-            // 队列目录被手工改坏时不要拖垮整个 worker：当作不可读跳过
-            return null;
+        }
+        return null;
+    }
+
+    /** 读失败后的短暂退避（10/20/40ms）：等并发的写入方把文件放回来。 */
+    private static void sleepQuietly(int attempt) {
+        try {
+            Thread.sleep(10L << attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

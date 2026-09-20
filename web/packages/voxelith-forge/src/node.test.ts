@@ -132,12 +132,17 @@ describe("Node 侧封装（真实文件系统）", () => {
     const out = join(dir, "demo.vxtbundle");
     const result = packMapDir(dir, out);
     expect(result.tiles).toBe(5);
+    expect(result.assets).toBeGreaterThanOrEqual(3);   // 清单 + 主图集 + LOD 图集页
     expect(result.verified).toBe(true);
 
     const bytes = new Uint8Array(readFileSync(out));
     const { index } = readBundleIndex(bytes);
     expect(index.mapId).toBe("demo");
     expect(index.tiles).toHaveLength(5);
+    // 自包含：清单与图集都在包里，落地后不用再找旁路文件
+    expect(index.assets?.map((asset) => asset.key)).toContain("manifest.json");
+    expect(index.assets?.map((asset) => asset.key)).toContain("atlas.png");
+    expect(index.assets?.map((asset) => asset.key)).toContain("tiles/lod/1/lod-atlas.png");
 
     // 逐片用 .vxt 解析，头部元数据与清单一致
     for (const entry of index.tiles) {

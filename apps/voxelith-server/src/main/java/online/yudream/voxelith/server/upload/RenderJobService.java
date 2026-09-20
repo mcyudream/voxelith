@@ -133,7 +133,14 @@ public class RenderJobService {
     private final int configuredBatchChunks;
     private final long renderHeapBytes;
     private final RenderProcessLauncher launcher;
-    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    /**
+     * 任务表：已完成的任务只保留最近 {@link #RETAINED_FINISHED_JOBS} 个。
+     * 每个任务带着最多 {@link #MAX_LOG_LINES} 行日志，长期运行必须设上界。
+     */
+    private final BoundedJobRegistry<Job> jobs = new BoundedJobRegistry<>(RETAINED_FINISHED_JOBS);
+
+    /** 已完成任务的保留数量（运行中的不受限制，也不参与淘汰）。 */
+    static final int RETAINED_FINISHED_JOBS = 50;
     private final ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "voxelith-render-job");
         t.setDaemon(true);
@@ -240,7 +247,7 @@ public class RenderJobService {
     }
 
     public List<RenderJob> list() {
-        return jobs.values().stream()
+        return jobs.list().stream()
                 .map(this::snapshot)
                 .sorted(Comparator.comparing(RenderJob::startedAt,
                         Comparator.nullsLast(Comparator.reverseOrder())))
@@ -248,12 +255,11 @@ public class RenderJobService {
     }
 
     public Optional<RenderJob> find(String id) {
-        return Optional.ofNullable(jobs.get(id)).map(this::snapshot);
+        return jobs.get(id).map(this::snapshot);
     }
 
     public List<String> logSince(String id, int since) {
-        Job job = jobs.get(id);
-        return job == null ? List.of() : job.linesSince(since);
+        return jobs.get(id).map(job -> job.linesSince(since)).orElseGet(List::of);
     }
 
     /**
@@ -412,23 +418,29 @@ public class RenderJobService {
     }
 
     private void execute(Job job) {
-        job.state.set(State.RUNNING);
-        job.stage = "启动管线";
-        job.append("开始渲染…");
-        int code = runPipeline(job);
-        job.exitCode = code;
-        job.finishedAt = Instant.now();
-        if (code == 0) {
-            job.state.set(State.SUCCEEDED);
-            job.progress = 100;
-            job.stage = "已完成";
-        } else {
-            job.state.set(State.FAILED);
-            job.stage = switch (code) {
-                case 3 -> "失败（范围超过单次渲染上限）";
-                case 4 -> "失败（内存不足）";
-                default -> "失败（退出码 " + code + "）";
-            };
+        try {
+            job.state.set(State.RUNNING);
+            job.stage = "启动管线";
+            job.append("开始渲染…");
+            int code = runPipeline(job);
+            job.exitCode = code;
+            job.finishedAt = Instant.now();
+            if (code == 0) {
+                job.state.set(State.SUCCEEDED);
+                job.progress = 100;
+                job.stage = "已完成";
+            } else {
+                job.state.set(State.FAILED);
+                job.stage = switch (code) {
+                    case 3 -> "失败（范围超过单次渲染上限）";
+                    case 4 -> "失败（内存不足）";
+                    default -> "失败（退出码 " + code + "）";
+                };
+            }
+        } finally {
+            // 完成后进入淘汰队列：任务表只保留最近若干个，避免长期运行内存只增不减。
+            // 放 finally 里是为了异常路径也照样入队，不会留下永远「运行中」的记录。
+            jobs.markFinished(job.id);
         }
     }
 

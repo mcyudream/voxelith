@@ -12,7 +12,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { parseManifest, type MapManifest } from "@yudream/voxelith-core";
 import { toTileset, type TilesetOptions } from "@yudream/voxelith-tiles";
 import { auditManifest, type AuditOptions, type AuditReport, type AuditStats } from "./audit.js";
-import { packVxtBundle, verifyBundle, type BundleSource } from "./bundle.js";
+import { packVxtBundle, verifyBundle, type BundleAsset, type BundleSource } from "./bundle.js";
 import { inspectGlb } from "./glb.js";
 
 export interface LoadedMap {
@@ -66,15 +66,17 @@ export function exportTileset(mapDir: string, outFile: string, options: TilesetO
 }
 
 /**
- * 把整张图打成 `.vxtbundle`：读出每片 glb → 逐片 `.vxt` → 外层索引。
+ * 把整张图打成 `.vxtbundle`：读出每片 glb → 逐片 `.vxt` → 外层索引，
+ * 并把**清单、图集、LOD 图集页**一起塞进 assets——这样整包才是自包含的
+ * （只有瓦片的包落地后渲染不出贴图）。
  *
  * @param verify 打包后立刻整包自检（默认 true；大图会多读一遍，但值得）
  */
 export function packMapDir(
   mapDir: string,
   outFile: string,
-  options: { mapId?: string; verify?: boolean } = {},
-): { tiles: number; bytes: number; verified: boolean } {
+  options: { mapId?: string; verify?: boolean; withAssets?: boolean } = {},
+): { tiles: number; assets: number; bytes: number; verified: boolean } {
   const loaded = loadMapDir(mapDir);
   const sources: BundleSource[] = [];
   for (const tile of loaded.manifest.tiles) {
@@ -85,15 +87,44 @@ export function packMapDir(
     sources.push({ tile, glb });
   }
   const mapId = options.mapId ?? loaded.manifest.mapId;
+  const assets = (options.withAssets ?? true) ? collectAssets(loaded) : [];
   const bytes = packVxtBundle(mapId, sources, {
     quantized: true,
     lod: false,
-  });
-  if ((options.verify ?? true) && !verifyBundle(bytes).ok) {
-    throw new Error(`打包后自检失败：${verifyBundle(bytes).errors.join("；")}`);
+  }, new Date().toISOString(), assets);
+  if (options.verify ?? true) {
+    const verified = verifyBundle(bytes);
+    if (!verified.ok) {
+      throw new Error(`打包后自检失败：${verified.errors.join("；")}`);
+    }
   }
   writeFileSync(outFile, bytes);
-  return { tiles: sources.length, bytes: bytes.length, verified: options.verify ?? true };
+  return {
+    tiles: sources.length,
+    assets: assets.length,
+    bytes: bytes.length,
+    verified: options.verify ?? true,
+  };
+}
+
+/**
+ * 收集要打进包里的旁路文件：清单 + 主图集 + 图集布局 + 每层 LOD 图集页。
+ * 缺哪个就跳过哪个（增量发布过的图可能没有布局文件），不因此让打包失败。
+ */
+function collectAssets(loaded: LoadedMap): BundleAsset[] {
+  const keys = new Set<string>(["manifest.json", "atlas.png", "atlas-layout.json"]);
+  keys.add(loaded.manifest.atlas.url);
+  for (const page of loaded.manifest.lodAtlases) {
+    keys.add(page.url);
+  }
+  const assets: BundleAsset[] = [];
+  for (const key of keys) {
+    const bytes = loaded.readFile(key);
+    if (bytes) {
+      assets.push({ key, bytes });
+    }
+  }
+  return assets;
 }
 
 /** 统计：瓦片数、层级、字节数、扩展使用情况（抽样 glb 头部）。 */
@@ -182,6 +213,11 @@ function basename(dir: string): string {
 
 /** 供脚本使用：把审计结论写成文件（CI 里归档用）。 */
 export function writeAuditReport(report: AuditReport, outFile: string): void {
+  writeJsonFile(report, outFile);
+}
+
+/** 把任意结果写成格式化 JSON 文件（CLI 的 `--json` 用）。 */
+export function writeJsonFile(value: unknown, outFile: string): void {
   mkdirSync(dirname(resolve(outFile)), { recursive: true });
-  writeFileSync(outFile, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  writeFileSync(outFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

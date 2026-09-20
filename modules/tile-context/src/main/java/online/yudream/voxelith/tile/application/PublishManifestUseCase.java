@@ -69,7 +69,9 @@ public class PublishManifestUseCase {
                 Instant.now().toString(),
                 new MapManifest.Settings(TileMeshAssembler.HIRES_TILE_SIZE, maxLevel + 1),
                 min, max,
-                new MapManifest.AtlasRef("atlas.png", outcome.atlasSize(), outcome.textureCount()),
+                // 非正方形（增量扩图集向下加行）时高度必须如实写进清单
+                new MapManifest.AtlasRef("atlas.png", outcome.atlasSize(), outcome.textureCount(),
+                        outcome.atlasHeight() > 0 ? outcome.atlasHeight() : outcome.atlasSize()),
                 entries, lodAtlases);
 
         publisher.publish(mapId, tilesDir, manifest, publishRoot);

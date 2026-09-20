@@ -3,6 +3,7 @@ import { sha1Hex } from "@yudream/voxelith-tiles";
 import {
   BUNDLE_MAGIC,
   packVxtBundle,
+  readBundleAsset,
   readBundleEntry,
   readBundleIndex,
   unpackBundle,
@@ -118,5 +119,54 @@ describe(".vxtbundle 归档", () => {
     const slice = readBundleEntry(bytes, index.tiles[0]!);
     expect(slice.buffer).toBe(bytes.buffer);
     expect(slice.length).toBe(index.tiles[0]!.length);
+  });
+
+  it("assets：清单/图集能一起打包，读取是零拷贝，解包一并返回", () => {
+    const entries = sources();
+    const manifest = new TextEncoder().encode(JSON.stringify({
+      mapId: "demo",
+      atlas: { url: "atlas.png", size: 256, height: 256, textureCount: 9 },
+      lodAtlases: [{ level: 1, url: "tiles/lod/1/lod-atlas.png", slotSize: 32, sha1: "x" }],
+    }));
+    const atlas = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const page = new Uint8Array([9, 9, 9]);
+    const bytes = packVxtBundle("demo", entries, {}, "2026-09-20T00:00:00Z", [
+      { key: "manifest.json", bytes: manifest },
+      { key: "atlas.png", bytes: atlas },
+      { key: "tiles/lod/1/lod-atlas.png", bytes: page },
+    ]);
+
+    const { index } = readBundleIndex(bytes);
+    expect(index.assets?.map((asset) => asset.key)).toEqual([
+      "manifest.json",
+      "atlas.png",
+      "tiles/lod/1/lod-atlas.png",
+    ]);
+    const manifestEntry = index.assets!.find((asset) => asset.key === "manifest.json")!;
+    expect(Array.from(readBundleAsset(bytes, manifestEntry))).toEqual(Array.from(manifest));
+
+    const unpacked = unpackBundle(bytes);
+    expect(Array.from(unpacked.assets.get("atlas.png")!)).toEqual(Array.from(atlas));
+    expect(unpacked.assets.size).toBe(3);
+    expect(verifyBundle(bytes).ok).toBe(true);
+  });
+
+  it("自包含性检查：清单引用的图集没打进去时报错", () => {
+    const entries = sources();
+    const manifest = new TextEncoder().encode(JSON.stringify({
+      mapId: "demo",
+      atlas: { url: "atlas.png", size: 256, height: 256, textureCount: 9 },
+    }));
+    // 只放清单、不放 atlas.png
+    const incomplete = packVxtBundle("demo", entries, {}, "2026-09-20T00:00:00Z", [
+      { key: "manifest.json", bytes: manifest },
+    ]);
+    const result = verifyBundle(incomplete);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((message) => message.includes("atlas.png"))).toBe(true);
+    expect(result.errors.some((message) => message.includes("不自包含"))).toBe(true);
+
+    // 只有瓦片（没有 assets）的老包形态仍然合法：不做自包含检查
+    expect(verifyBundle(packVxtBundle("demo", entries)).ok).toBe(true);
   });
 });

@@ -96,6 +96,7 @@ public class IncrementalRenderConfig {
             @Value("${yudream.voxelith.publish-dir:./data/maps}") String publishDir,
             @Value("${yudream.voxelith.work-dir:./work}") String workDir,
             @Value("${yudream.voxelith.incremental.models-file:}") String modelsFile,
+            @Value("${yudream.voxelith.render.meshopt:true}") boolean meshopt,
             @Value("${yudream.voxelith.incremental.map-id:demo}") String mapId) {
         BakeChunksUseCase bake = new BakeChunksUseCase(
                 incrementalCatalog, incrementalWorld, new FileBakeArtifactSink(),
@@ -103,7 +104,8 @@ public class IncrementalRenderConfig {
         GenerateTilesUseCase tiles = TileContextBootstrap.openGenerator(incrementalCatalog);
         GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                 TileContextBootstrap.openTextureColorSampler(incrementalCatalog),
-                TileContextBootstrap.openVertexColorTileExporter(),
+                // LOD 与 hires 都跟全量渲染用同一套压缩开关
+                TileContextBootstrap.openVertexColorTileExporter(meshopt),
                 TileContextBootstrap.openImageCodec());
         Path mapDir = Path.of(publishDir).resolve(mapId);
         return new RegionIncrementalRenderAdapter(
@@ -111,7 +113,9 @@ public class IncrementalRenderConfig {
                 // 增量扩图集：新方块/mod 方块的贴图追加进已发布图集（老瓦片 UV 不动）
                 TileContextBootstrap.openAtlasExpander(Path.of(publishDir), incrementalCatalog),
                 new FileHeightfieldStore(mapDir.resolve("heightfield.bin")),
-                mapDir);
+                mapDir,
+                // 增量 hires 瓦片与全量渲染同款：共享图集（不内嵌 PNG）+ 可选 meshopt
+                meshopt);
     }
 
     /**

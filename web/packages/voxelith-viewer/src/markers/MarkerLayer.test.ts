@@ -200,4 +200,38 @@ describe("MarkerLayer", () => {
     expect(markers.setIds()).toEqual([]);
     markers.dispose();
   });
+
+  /**
+   * 回归：同色同图标的图钉、同文字的标签共用一张纹理。
+   * 不缓存的话，5000 个 POI 会产生 1 万张 canvas 纹理（显存随标注数线性增长）。
+   */
+  it("纹理按「颜色+图标」与「文字」复用，不逐标注新建", () => {
+    let pinCreates = 0;
+    let labelCreates = 0;
+    const markers = new MarkerLayer({
+      textureFactory: {
+        pin: () => {
+          pinCreates++;
+          return new THREE.Texture();
+        },
+        label: () => {
+          labelCreates++;
+          return new THREE.Texture();
+        },
+      },
+    });
+    markers.setMarkerSets([parse({
+      id: "many",
+      label: "一堆点",
+      markers: [
+        { id: "a", type: "poi", label: "同名", position: { x: 0, y: 0, z: 0 } },
+        { id: "b", type: "poi", label: "同名", position: { x: 1, y: 0, z: 0 } },
+        { id: "c", type: "poi", label: "同名", position: { x: 2, y: 0, z: 0 } },
+      ],
+    })]);
+
+    expect(pinCreates).toBe(1);                     // 三个 POI 同色同图标 → 一张图钉
+    expect(labelCreates).toBe(1);                   // 同文字同色 → 一张标签
+    markers.dispose();
+  });
 });

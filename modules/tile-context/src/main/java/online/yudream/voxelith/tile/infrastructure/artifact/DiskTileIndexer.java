@@ -44,15 +44,18 @@ public final class DiskTileIndexer {
                 .thenComparingInt(t -> t.pos().z()));
 
         int atlasSize = 0;
+        int atlasHeight = 0;
         int textureCount = 1;
         Path layoutFile = tilesDir.resolve(AtlasLayoutFiles.FILE_NAME);
         if (Files.isRegularFile(layoutFile)) {
             AtlasLayout layout = AtlasLayoutFiles.read(layoutFile);
             atlasSize = layout.pixelSize();
+            // 盘上重建清单同样要带上真实高度：增量扩图集后图集是非正方形的
+            atlasHeight = layout.height();
             textureCount = Math.max(1, layout.cellIndex().size());
         }
         return new TileOutcome(summaries, tilesDir.resolve("atlas.png"),
-                tilesDir.resolve("tile-report.json"), textureCount, atlasSize,
+                tilesDir.resolve("tile-report.json"), textureCount, atlasSize, atlasHeight,
                 // 索引已有产物时无从得知当时的缺贴图情况（图集已经烤好了）
                 List.of(), 0);
     }

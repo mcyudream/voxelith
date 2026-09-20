@@ -105,6 +105,7 @@ public class GenerateTilesUseCase {
 
         Path reportFile = sink.writeReport(command.outputDir(), summaries, textureCount, atlasSize);
         return new TileOutcome(summaries, atlasFile, reportFile, textureCount, atlasSize,
+                layout.height(),
                 missingTextures, untexturedQuads);
     }
 

@@ -28,4 +28,20 @@ public record TileCommand(Map<ChunkPos, BakedChunkMeshData> meshes, Path outputD
     public TileCommand(Map<ChunkPos, BakedChunkMeshData> meshes, Path outputDir, AtlasReuse reuseAtlas) {
         this(meshes, outputDir, EncodeOptions.uncompressed(), reuseAtlas);
     }
+
+    /**
+     * 增量重跑（推荐）：复用已发布图集 + **与全量渲染同款**的编码选项
+     * （共享图集不内嵌 PNG、可选 {@code EXT_meshopt_compression}）。
+     *
+     * <p>放在 application 层是有架构原因的：编排域只允许引用本上下文的 application 层，
+     * 不能直接碰 {@code EncodeOptions}（tile.domain）。跨上下文的调用方用这个工厂，
+     * 既拿到与全量一致的编码，也不越层。</p>
+     *
+     * @param meshopt 是否启用 meshopt 熵编码（与全量渲染的 {@code render.meshopt} 同源）
+     */
+    public static TileCommand incremental(Map<ChunkPos, BakedChunkMeshData> meshes, Path outputDir,
+                                          AtlasReuse reuseAtlas, boolean meshopt) {
+        return new TileCommand(meshes, outputDir,
+                EncodeOptions.sharedAtlas().withMeshopt(meshopt), reuseAtlas);
+    }
 }

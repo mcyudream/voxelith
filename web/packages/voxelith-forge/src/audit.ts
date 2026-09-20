@@ -98,7 +98,6 @@ export function auditManifest(manifest: MapManifest, options: AuditOptions = {})
 
   const seenUrls = new Set<string>();
   const levels = new Set<number>();
-  const declaredGlb = new Map<string, GlbInfo | null>();
   for (const tile of manifest.tiles) {
     levels.add(tile.level);
     if (tile.level === 0) {
@@ -208,7 +207,6 @@ export function auditManifest(manifest: MapManifest, options: AuditOptions = {})
             url: tile.url,
           });
         }
-        declaredGlb.set(tile.url, info);
         if (!info) {
           continue;
         }
@@ -329,7 +327,6 @@ export function auditManifest(manifest: MapManifest, options: AuditOptions = {})
     }
   }
 
-  void declaredGlb;
   return { ok: !issues.some((issue) => issue.severity === "error"), issues, stats };
 }
 

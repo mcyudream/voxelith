@@ -18,6 +18,10 @@ import java.util.Optional;
  *
  * <p>实现落在 infrastructure（文件系统租约队列），因此不引入 ZooKeeper/Redis 之类的
  * 外部依赖：多个 worker 只要能看见同一个目录（本地、NFS、SMB 均可）就能协作。</p>
+ *
+ * <p><b>作业产物的路径基准</b>：{@link #complete} 回填的路径必须是**相对调度方
+ * runDir 的路径**（或调度方通过 {@code RunPipelineUseCase(..., artifactRoot)} 指定的根）。
+ * 跨进程部署时 worker 与调度方要约定同一个根，否则调度方会以为产物丢失而重跑。</p>
  */
 public interface ShardQueuePort {
 
@@ -25,13 +29,16 @@ public interface ShardQueuePort {
     void enqueue(PipelineStage stage, List<String> shards);
 
     /**
-     * 领取一个可执行分片并写入租约。
+     * 领取一个可执行分片并写入租约（**只在该阶段内**领取）。
      *
      * @param workerId 领取者标识（写入作业，便于排查是哪台机器在跑）
      * @param lease    租约时长；worker 崩溃后租约到期，其他 worker 可重新领取
+     * @param stage    只领取这个阶段的分片；同名的分片键在不同阶段是**不同的作业**
+     *                 （BAKE 的 {@code r.0.0} 与 TILE 的 {@code r.0.0} 互不相干），
+     *                 越阶段领取会让执行方干错的活、并把对方的作业挂在租约上
      * @return 领到的作业；没有可领分片时为空
      */
-    Optional<ShardJob> claim(String workerId, Duration lease);
+    Optional<ShardJob> claim(String workerId, Duration lease, PipelineStage stage);
 
     /** 标记完成并回填产物（相对 runDir 的路径）。 */
     void complete(PipelineStage stage, String shard, List<String> artifacts);

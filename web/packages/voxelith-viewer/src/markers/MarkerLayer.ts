@@ -21,6 +21,9 @@ import type { Marker, MarkerSet, Vec3 } from "@yudream/voxelith-core";
 const DEFAULT_FILL = "#2f6fd0";
 const DEFAULT_LINE = "#e6ebf4";
 
+/** POI 图钉/标签纹理缓存上限（超过就整体清空重建，避免缓存本身变成泄漏）。 */
+const MAX_TEXTURE_CACHE = 256;
+
 /** 每个标记渲染出来的对象与其元数据。 */
 interface MarkerEntry {
   marker: Marker;
@@ -32,7 +35,6 @@ interface MarkerEntry {
   anchor: THREE.Vector3;
   distanceFrom: number;
   distanceTo: number;
-  textures: THREE.Texture[];
 }
 
 export interface MarkerPickResult {
@@ -64,6 +66,14 @@ export class MarkerLayer {
   private readonly textures: MarkerTextureFactory;
   private readonly pickables: THREE.Object3D[] = [];
   private readonly cameraWorld = new THREE.Vector3();
+  /**
+   * 纹理缓存：同一套「颜色 + 图标」的图钉、同一段标签文字只生成一张 canvas 纹理。
+   *
+   * <p>不缓存的话，一张图 5000 个 POI 就是 1 万张纹理（每张 64² canvas），
+   * 显存与解码开销都随标注数线性增长。上限 {@link MAX_TEXTURE_CACHE} 防止
+   * 「每个标注都不同文字」时缓存自己变成泄漏源。</p>
+   */
+  private readonly textureCache = new Map<string, THREE.Texture>();
 
   constructor(options: { labelScale?: number; textureFactory?: MarkerTextureFactory } = {}) {
     this.object3d.name = "voxelith-markers";
@@ -176,10 +186,11 @@ export class MarkerLayer {
     for (const entry of this.entries) {
       entry.object.removeFromParent();
       disposeObject(entry.object);
-      for (const texture of entry.textures) {
-        texture.dispose();
-      }
     }
+    for (const texture of this.textureCache.values()) {
+      texture.dispose();
+    }
+    this.textureCache.clear();
     this.entries.length = 0;
     this.bySet.clear();
     this.hiddenSets.clear();
@@ -214,9 +225,9 @@ export class MarkerLayer {
     const group = new THREE.Group();
     group.position.set(marker.position.x, marker.position.y, marker.position.z);
 
-    const textures: THREE.Texture[] = [];
-    const pinTexture = this.textures.pin(marker.style.fillColor ?? DEFAULT_FILL, marker.style.icon);
-    textures.push(pinTexture);
+    const pinColor = marker.style.fillColor ?? DEFAULT_FILL;
+    const pinTexture = this.cachedTexture(`pin|${pinColor}|${marker.style.icon ?? ""}`,
+      () => this.textures.pin(pinColor, marker.style.icon));
     const pin = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: pinTexture,
@@ -231,12 +242,11 @@ export class MarkerLayer {
     group.add(pin);
 
     if (marker.label) {
-      const labelTexture = this.textures.label(
-        marker.label,
-        marker.style.fillColor ?? DEFAULT_FILL,
-        marker.style.opacity ?? 1,
+      const opacity = marker.style.opacity ?? 1;
+      const labelTexture = this.cachedTexture(
+        `label|${marker.label}|${pinColor}|${opacity}`,
+        () => this.textures.label(marker.label, pinColor, opacity),
       );
-      textures.push(labelTexture);
       const label = new THREE.Sprite(
         new THREE.SpriteMaterial({
           map: labelTexture,
@@ -257,7 +267,6 @@ export class MarkerLayer {
       anchor: new THREE.Vector3(marker.position.x, marker.position.y, marker.position.z),
       distanceFrom: marker.minDistance,
       distanceTo: marker.maxDistance,
-      textures,
     };
   }
 
@@ -281,7 +290,6 @@ export class MarkerLayer {
       anchor: firstPoint(marker.points),
       distanceFrom: marker.minDistance,
       distanceTo: marker.maxDistance,
-      textures: [],
     };
   }
 
@@ -310,7 +318,6 @@ export class MarkerLayer {
       anchor: centroid(marker.shape, marker.shapeY),
       distanceFrom: marker.minDistance,
       distanceTo: marker.maxDistance,
-      textures: [],
     };
   }
 
@@ -344,7 +351,6 @@ export class MarkerLayer {
       anchor: centroid(marker.shape, (marker.shapeMinY + marker.shapeMaxY) / 2),
       distanceFrom: marker.minDistance,
       distanceTo: marker.maxDistance,
-      textures: [],
     };
   }
 
@@ -389,8 +395,24 @@ export class MarkerLayer {
       anchor: center,
       distanceFrom: marker.minDistance,
       distanceTo: marker.maxDistance,
-      textures: [],
     };
+  }
+
+  /** 取缓存纹理；超过上限时先清空（宁可重建也不让缓存无界增长）。 */
+  private cachedTexture(key: string, create: () => THREE.Texture): THREE.Texture {
+    const cached = this.textureCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    if (this.textureCache.size >= MAX_TEXTURE_CACHE) {
+      for (const texture of this.textureCache.values()) {
+        texture.dispose();
+      }
+      this.textureCache.clear();
+    }
+    const created = create();
+    this.textureCache.set(key, created);
+    return created;
   }
 }
 

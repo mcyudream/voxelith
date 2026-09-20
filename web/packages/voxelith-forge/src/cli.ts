@@ -15,7 +15,16 @@
  *
  * 退出码：0 = 成功；1 = 审计发现 error（或命令执行失败）；2 = 参数错误。
  */
-import { auditMapDir, exportTileset, loadMapDir, mapStats, packMapDir, tileExtensionSummary, writeAuditReport } from "./node.js";
+import {
+  auditMapDir,
+  exportTileset,
+  loadMapDir,
+  mapStats,
+  packMapDir,
+  tileExtensionSummary,
+  writeAuditReport,
+  writeJsonFile,
+} from "./node.js";
 import { formatAuditReport } from "./audit.js";
 import { pathToFileURL } from "node:url";
 
@@ -43,6 +52,7 @@ const USAGE = `voxelith-forge —— VMC 产物工具链
   --lon/--lat <deg>      3D Tiles 的经纬锚点（默认 0,0）
   --meters-per-block <n> 1 方块 = 多少米（默认 1）
   --no-verify            pack 后不做整包自检
+  --no-assets            pack 不打入清单/图集（默认打，包才是自包含的）
 `;
 
 export function main(argv: readonly string[]): number {
@@ -109,9 +119,12 @@ export function main(argv: readonly string[]): number {
           console.error("缺少 --out");
           return 2;
         }
-        const result = packMapDir(mapDir, out, { verify: !args.flags.has("no-verify") });
+        const result = packMapDir(mapDir, out, {
+          verify: !args.flags.has("no-verify"),
+          withAssets: !args.flags.has("no-assets"),
+        });
         console.log(
-          `已打包 ${result.tiles} 片瓦片 → ${out}`
+          `已打包 ${result.tiles} 片瓦片 + ${result.assets} 个旁路文件（清单/图集）→ ${out}`
           + `（${(result.bytes / 1024 / 1024).toFixed(1)} MB）`
           + (result.verified ? "，自检通过" : ""),
         );
@@ -145,7 +158,7 @@ function writeJsonIfRequested(args: ParsedArgs, value: unknown): void {
   if (!out) {
     return;
   }
-  writeAuditReport(value as never, out);
+  writeJsonFile(value, out);
   console.log(`结果已写入 ${out}`);
 }
 

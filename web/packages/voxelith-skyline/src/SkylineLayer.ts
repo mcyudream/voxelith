@@ -63,6 +63,8 @@ export class SkylineLayer {
   private readonly materials = new Map<number | "fallback", THREE.MeshBasicMaterial>();
   private readonly quads: TileQuad[] = [];
   private readonly activeLevelValue: number | null;
+  /** 每帧复用：避免 update() 每次分配（远景每帧都跑）。 */
+  private readonly cameraPosition = new THREE.Vector3();
 
   constructor(options: SkylineLayerOptions) {
     this.options = options;
@@ -100,7 +102,7 @@ export class SkylineLayer {
    * 只画**最粗的 active 层**：层带之间的重叠是给切换用的，同时画两层会互相盖住。
    */
   update(camera: THREE.Camera): void {
-    const position = camera.getWorldPosition(new THREE.Vector3());
+    const position = camera.getWorldPosition(this.cameraPosition);
     const activeLevel = this.activeLevel();
     const hysteresis = this.options.hysteresis ?? 0.15;
     for (const quad of this.quads) {
@@ -211,7 +213,7 @@ export class SkylineLayer {
     const geometry = new THREE.PlaneGeometry(size, size);
     geometry.rotateX(-Math.PI / 2);
     applyUvRect(geometry, uv);
-    const mesh = new THREE.Mesh(geometry, this.materialFor(tile.level, uv));
+    const mesh = new THREE.Mesh(geometry, this.materialFor(tile.level));
     mesh.position.set(
       tile.x * size + size / 2,
       Math.max(tile.min[1]!, tile.max[1]!) + (this.options.lift ?? 0.05),
@@ -224,7 +226,7 @@ export class SkylineLayer {
     return mesh;
   }
 
-  private materialFor(level: number, uv: LodAtlasUv): THREE.MeshBasicMaterial {
+  private materialFor(level: number): THREE.MeshBasicMaterial {
     const texture = this.options.atlasTextures?.get(level);
     const key: number | "fallback" = texture ? level : "fallback";
     const cached = this.materials.get(key);
@@ -240,14 +242,15 @@ export class SkylineLayer {
       side: THREE.FrontSide,
       fog: true,
     });
-    // 图集页是线性过滤的无 mip 纹理：近似的远景色块不需要 mip，也避免跨槽位串色
-    if (texture) {
+    // 图集页是线性过滤的无 mip 纹理：近似的远景色块不需要 mip，也避免跨槽位串色。
+    // 纹理通常由 TileManager 等外部持有，所以只在还没配好时才动它（避免无故改写别人的状态）
+    if (texture && (texture.magFilter !== THREE.LinearFilter
+      || texture.minFilter !== THREE.LinearFilter || texture.generateMipmaps)) {
       texture.magFilter = THREE.LinearFilter;
       texture.minFilter = THREE.LinearFilter;
       texture.generateMipmaps = false;
     }
     this.materials.set(key, material);
-    void uv;
     return material;
   }
 

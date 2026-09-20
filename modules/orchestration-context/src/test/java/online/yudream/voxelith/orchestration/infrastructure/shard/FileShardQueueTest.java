@@ -42,7 +42,8 @@ class FileShardQueueTest {
         FileShardQueue queue = new FileShardQueue(root);
         queue.enqueue(PipelineStage.BAKE, List.of("r.0.0", "r.1.0"));
 
-        ShardJob claimed = queue.claim("worker-a", Duration.ofMinutes(5)).orElseThrow();
+        ShardJob claimed = queue.claim("worker-a", Duration.ofMinutes(5), PipelineStage.BAKE)
+                .orElseThrow();
         queue.complete(PipelineStage.BAKE, claimed.shard(), List.of("bake/" + claimed.shard() + ".ndjson"));
 
         queue.enqueue(PipelineStage.BAKE, List.of("r.0.0", "r.1.0"));
@@ -113,12 +114,14 @@ class FileShardQueueTest {
         FileShardQueue queue = new FileShardQueue(root);
         queue.enqueue(PipelineStage.BAKE, List.of("r.0.0"));
 
-        ShardJob first = queue.claim("crashed-worker", Duration.ofMillis(1)).orElseThrow();
+        ShardJob first = queue.claim("crashed-worker", Duration.ofMillis(1), PipelineStage.BAKE)
+                .orElseThrow();
         assertThat(first.workerId()).isEqualTo("crashed-worker");
         assertThat(first.attempts()).isEqualTo(1);
         Thread.sleep(20);
 
-        ShardJob second = queue.claim("alive-worker", Duration.ofMinutes(5)).orElseThrow();
+        ShardJob second = queue.claim("alive-worker", Duration.ofMinutes(5), PipelineStage.BAKE)
+                .orElseThrow();
         assertThat(second.workerId()).isEqualTo("alive-worker");
         assertThat(second.attempts()).isEqualTo(2);
         queue.complete(PipelineStage.BAKE, "r.0.0", List.of("ok"));
@@ -131,13 +134,13 @@ class FileShardQueueTest {
     void failureAndClear(@TempDir Path root) {
         FileShardQueue queue = new FileShardQueue(root);
         queue.enqueue(PipelineStage.LOD, List.of("r.0.0"));
-        ShardJob job = queue.claim("w", Duration.ofMinutes(1)).orElseThrow();
+        ShardJob job = queue.claim("w", Duration.ofMinutes(1), PipelineStage.LOD).orElseThrow();
         queue.fail(PipelineStage.LOD, job.shard(), "OOM");
 
         ShardJob failed = queue.jobs(PipelineStage.LOD).get(0);
         assertThat(failed.state()).isEqualTo(ShardJobState.FAILED);
         assertThat(failed.error()).contains("OOM");
-        assertThat(queue.claim("w2", Duration.ofMinutes(1))).isEmpty();
+        assertThat(queue.claim("w2", Duration.ofMinutes(1), PipelineStage.LOD)).isEmpty();
 
         queue.clear(PipelineStage.LOD);
         assertThat(queue.jobs(PipelineStage.LOD)).isEmpty();
@@ -145,10 +148,34 @@ class FileShardQueueTest {
         assertThat(queue.jobs(PipelineStage.LOD).get(0).state()).isEqualTo(ShardJobState.QUEUED);
     }
 
+    /**
+     * 回归：分片键在各阶段是重名的（BAKE 的 r.0.0 与 TILE 的 r.0.0 互不相干），
+     * 领取必须限定阶段——否则 BAKE 的 worker 会抢走 TILE 的分片，干错的活
+     * 并把对方的作业挂在租约上（曾经真实发生过）。
+     */
+    @Test
+    @DisplayName("领取限定阶段：BAKE worker 永远拿不到 TILE 的分片")
+    void claimIsScopedToStage(@TempDir Path root) {
+        FileShardQueue queue = new FileShardQueue(root);
+        queue.enqueue(PipelineStage.BAKE, List.of("r.0.0"));
+        queue.enqueue(PipelineStage.TILE, List.of("r.0.0", "r.0.1"));
+
+        // 反复领 BAKE：只能拿到 BAKE 那一片，TILE 的两片必须纹丝不动
+        assertThat(queue.claim("bake", Duration.ofMinutes(5), PipelineStage.BAKE).orElseThrow().shard())
+                .isEqualTo("r.0.0");
+        assertThat(queue.claim("bake", Duration.ofMinutes(5), PipelineStage.BAKE)).isEmpty();
+        assertThat(queue.jobs(PipelineStage.TILE))
+                .allMatch(job -> job.state() == ShardJobState.QUEUED);
+
+        // TILE 侧自己领得到
+        assertThat(queue.claim("tile", Duration.ofMinutes(5), PipelineStage.TILE).orElseThrow().stage())
+                .isEqualTo(PipelineStage.TILE);
+    }
+
     private static void drain(FileShardQueue queue, String worker, Set<String> out)
             throws InterruptedException {
         while (true) {
-            ShardJob job = queue.claim(worker, Duration.ofMinutes(5)).orElse(null);
+            ShardJob job = queue.claim(worker, Duration.ofMinutes(5), PipelineStage.TILE).orElse(null);
             if (job == null) {
                 return;
             }
