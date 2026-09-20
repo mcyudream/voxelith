@@ -25,7 +25,9 @@ import java.util.stream.Collectors;
  * @param minY          最低渲染高度（含）；低于它的方块不参与网格化（地下洞穴/矿层对地表地图无用）
  * @param minX/maxX/minZ/maxZ 要渲染的方块范围（含端点，null = 不裁剪）。region 窗口是按 512 方块
  *                     取整的，按方块范围裁剪才能刚好只渲染目标区域（例如一个学校）
- * @param mcVersion     采集用的 MC 版本（默认 {@link #DEFAULT_MC_VERSION}）
+ * @param mcVersion     采集用的 MC 版本；**留空 = 自动**（优先资源包文件名里的版本，
+ *                      其次存档版本，最后兜底 {@link #DEFAULT_MC_VERSION}），
+ *                      见 {@code McVersionResolver}
  * @param loaderVersion 采集用的 Fabric loader 版本（默认 {@link #DEFAULT_LOADER_VERSION}）
  * @param skipHarvest   true = 不跑采集、纯静态模型解析。默认先采集一次并缓存到
  *                     {@code <workDir>/models.json.gz}：静态解析在 uvlock / 元素旋转等处与原版有偏差，
@@ -88,7 +90,7 @@ public record RenderMapOptions(
               dimension        维度（默认 minecraft:overworld）
               workDir          中间产物目录（默认 ./work）
               publishDir       发布根目录（默认 ./data/maps）
-              mcVersion        采集的 MC 版本（默认 %s）
+              mcVersion        采集的 MC 版本；留空 = 自动（资源包文件名 → 存档版本 → %s）
               loaderVersion    采集的 Fabric loader 版本（默认 %s）
               skipHarvest      true = 不采集，纯静态模型解析（uvlock/旋转等处与原版有偏差）
               modelsFile       直接指定 models.json.gz 路径；留空 = 用 <workDir>/models.json.gz 或自动采集
@@ -107,7 +109,9 @@ public record RenderMapOptions(
     public RenderMapOptions {
         packs = packs == null ? List.of() : List.copyOf(packs);
         workerClasspath = workerClasspath == null ? List.of() : List.copyOf(workerClasspath);
-        mcVersion = mcVersion == null || mcVersion.isBlank() ? DEFAULT_MC_VERSION : mcVersion;
+        // 留空即「自动」：真正的版本由 McVersionResolver 按资源包/存档判定，
+        // 这里不再写死默认值——写死会让任何非默认版本的存档都踩贴图改名的坑
+        mcVersion = mcVersion == null || mcVersion.isBlank() ? null : mcVersion.trim();
         loaderVersion = loaderVersion == null || loaderVersion.isBlank()
                 ? DEFAULT_LOADER_VERSION : loaderVersion;
         if (worldDir == null) {
@@ -245,7 +249,10 @@ public record RenderMapOptions(
         addIfPresent(args, "--max-x", maxX);
         addIfPresent(args, "--min-z", minZ);
         addIfPresent(args, "--max-z", maxZ);
-        add(args, "--mc-version", mcVersion);
+        // 未显式指定时不传：子进程会用同一套规则重新判定（结果一致，且日志里能看出判据）
+        if (mcVersion != null) {
+            add(args, "--mc-version", mcVersion);
+        }
         add(args, "--loader-version", loaderVersion);
         if (skipHarvest) {
             args.add("--skip-harvest");

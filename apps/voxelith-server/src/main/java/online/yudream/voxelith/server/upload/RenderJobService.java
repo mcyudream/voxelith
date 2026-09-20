@@ -3,6 +3,7 @@ package online.yudream.voxelith.server.upload;
 import online.yudream.voxelith.bake.application.BakeCommand;
 import online.yudream.voxelith.server.cli.RenderMapCli;
 import online.yudream.voxelith.server.cli.RenderMapOptions;
+import online.yudream.voxelith.server.support.McVersionResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -300,6 +301,11 @@ public class RenderJobService {
         int minZ = requireRange(request.minZ(), request.maxZ(), "Z");
         int maxZ = request.maxZ();
 
+        // 采集版本不写死：优先资源包文件名里的版本，其次存档版本，最后才用配置默认值。
+        // 三者不一致会让 models.json.gz 的模型与包里的贴图对不上（大片品红 / 空洞）
+        String packName = packs.isEmpty() ? null : packs.getFirst().getFileName().toString();
+        String mcVersion = McVersionResolver.resolve(
+                null, packName, upload.versionName(), inputs.mcVersion());
         RenderMapOptions options = new RenderMapOptions(
                 Path.of(upload.worldDir()),
                 dimension,
@@ -318,7 +324,7 @@ public class RenderJobService {
                 request.lodAtlas() == null ? defaultLodAtlas : request.lodAtlas(),
                 request.minY() == null ? defaultMinY : request.minY(),
                 minX, maxX, minZ, maxZ,
-                inputs.mcVersion(),
+                mcVersion,
                 inputs.loaderVersion(),
                 // 采集需要 worker 子进程 classpath（配置或自动发现）；拿得到就在进程内跑一次
                 // headless 采集（uvlock/元素旋转等按游戏几何定义正确），拿不到才退回静态解析

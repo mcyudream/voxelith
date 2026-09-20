@@ -22,6 +22,10 @@ import java.util.Optional;
  * 并把地图当成普通贴图喂给图集——因为图集本来就是按贴图打包的，这样无需改瓦片协议。</p>
  *
  * <p>贴图 id 用 {@code voxelith:map/<编号>}，走同一套图集格与 UV 映射。</p>
+ *
+ * <p><b>没有地图数据的展示框也画</b>：地图文件缺失（存档没带 {@code data/map_*.dat}）
+ * 或地图未被识别时，仍然把展示框本体画出来（内置的框体贴图），
+ * 至少不会出现「墙上一片空」这种更难判断的情况；跳过的数量会报给调用方。</p>
  */
 public final class MapArtInjector implements TexturePixelSource {
 
@@ -30,11 +34,22 @@ public final class MapArtInjector implements TexturePixelSource {
     /** 地图贴图 id 的路径前缀。 */
     public static final String PATH_PREFIX = "map/";
 
+    /** 空展示框（没有可用地图）的框体贴图 id。 */
+    public static final String EMPTY_FRAME_TEXTURE = NAMESPACE + ":frame/empty";
+
+    /** 框体尺寸：整块 1×1 但只画外圈（内圈留空），用贴图区分。 */
+    private static final int FRAME_PIXELS = 16;
+
     private final TexturePixelSource delegate;
     private final Map<String, AtlasTexture> mapTextures = new LinkedHashMap<>();
+    /** 已注册的地图数（不含内置框体贴图）。 */
+    private int registeredMaps;
+    /** 上一次 inject 里「有框但没地图」的数量（诊断输出用）。 */
+    private int lastFramesWithoutMap;
 
     public MapArtInjector(TexturePixelSource delegate) {
         this.delegate = delegate;
+        mapTextures.put(EMPTY_FRAME_TEXTURE, emptyFrameTexture());
     }
 
     /**
@@ -45,24 +60,37 @@ public final class MapArtInjector implements TexturePixelSource {
     public String register(int mapId, int[] argb) {
         String id = NAMESPACE + ":" + PATH_PREFIX + mapId;
         mapTextures.put(id, new AtlasTexture(Identifier.parse(id), 128, 128, argb));
+        registeredMaps++;
         return id;
     }
 
     /** 已注册的地图数量。 */
     public int registeredCount() {
-        return mapTextures.size();
+        return registeredMaps;
+    }
+
+    /** 上一次注入中「展示了框体、但没有地图贴图」的数量。 */
+    public int framesWithoutMap() {
+        return lastFramesWithoutMap;
     }
 
     @Override
     public Optional<AtlasTexture> load(Identifier textureId) {
-        if (NAMESPACE.equals(textureId.namespace()) && textureId.path().startsWith(PATH_PREFIX)) {
-            return Optional.ofNullable(mapTextures.get(textureId.namespace() + ":" + textureId.path()));
+        // 本注入器自己供给两类贴图：地图（voxelith:map/N）与内置空框（voxelith:frame/empty）
+        if (NAMESPACE.equals(textureId.namespace())) {
+            AtlasTexture own = mapTextures.get(textureId.namespace() + ":" + textureId.path());
+            if (own != null) {
+                return Optional.of(own);
+            }
         }
         return delegate.load(textureId);
     }
 
     /**
-     * 把展示框面片注入对应区块的网格。未注册贴图的展示框会被跳过。
+     * 把展示框面片注入对应区块的网格。
+     *
+     * <p>有地图贴图就贴地图；没有（地图文件缺失/未注册）就贴内置框体贴图——
+     * 展示框本身是实体，渲染出来是符合原版观感的。</p>
      *
      * @return 注入后的新网格表（原表不被修改；区块不存在时新建一条）
      */
@@ -70,10 +98,15 @@ public final class MapArtInjector implements TexturePixelSource {
                                                     Map<ChunkPos, BakedChunkMeshData> meshes) {
         Map<ChunkPos, BakedChunkMeshData> out = new LinkedHashMap<>(meshes);
         int injected = 0;
+        int withoutMap = 0;
         for (MapArtFrame frame : frames) {
             String textureId = NAMESPACE + ":" + PATH_PREFIX + frame.mapId();
-            if (!mapTextures.containsKey(textureId)) {
-                continue;
+            if (mapTextures.containsKey(textureId)) {
+                // 有地图：贴地图
+            } else {
+                // 地图文件缺失或没被识别：仍然画出展示框本体，避免「墙上什么都没有」
+                textureId = EMPTY_FRAME_TEXTURE;
+                withoutMap++;
             }
             BakedQuadData quad = quad(frame, textureId);
             if (quad == null) {
@@ -89,7 +122,28 @@ public final class MapArtInjector implements TexturePixelSource {
             out.put(chunk, new BakedChunkMeshData(chunk, List.copyOf(quads), mesh.missing(), mesh.blocksBaked()));
             injected++;
         }
+        lastFramesWithoutMap = withoutMap;
         return out;
+    }
+
+    /**
+     * 内置框体贴图：16×16，外圈木色、内圈近透明（很像没放地图的展示框）。
+     * 只有 5% 不透明度的内圈既能透出墙面，又不会在图集里留下洞。
+     */
+    private static AtlasTexture emptyFrameTexture() {
+        int[] argb = new int[FRAME_PIXELS * FRAME_PIXELS];
+        int frame = 0xFF6B4A2B;   // 木框
+        int dark = 0xFF50371F;    // 外圈描边
+        int inner = 0x00000000;   // 内圈透明
+        for (int y = 0; y < FRAME_PIXELS; y++) {
+            for (int x = 0; x < FRAME_PIXELS; x++) {
+                boolean border = x == 0 || y == 0 || x == FRAME_PIXELS - 1 || y == FRAME_PIXELS - 1;
+                boolean innerBorder = x == 1 || y == 1
+                        || x == FRAME_PIXELS - 2 || y == FRAME_PIXELS - 2;
+                argb[y * FRAME_PIXELS + x] = border ? dark : (innerBorder ? frame : inner);
+            }
+        }
+        return new AtlasTexture(Identifier.parse(EMPTY_FRAME_TEXTURE), FRAME_PIXELS, FRAME_PIXELS, argb);
     }
 
     /** 注入了几个面片（诊断用）。 */

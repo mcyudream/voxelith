@@ -208,6 +208,7 @@ yudream:
 
 ```bash
 # 全量：一个窗口一次跑完 bake→tile→lod→manifest，直接发布到 ./data/maps/{mapId}
+#（-PmcVersion 可省略：省略时按 资源包文件名 → 存档版本 → 兜底 自动判定）
 ./gradlew :apps:voxelith-server:renderMap \
     -PworldDir=<存档> -PmapId=swust -Ppacks=<原版client.jar> \
     -PregionX0=.. -PregionX1=.. -PregionZ0=.. -PregionZ1=.. -Pheap=8g
@@ -314,6 +315,7 @@ pnpm -r build                       # 全部包 + 应用构建
 |---|---|
 | 方块 | 含 mod 方块（前提是 mod jar 在 `packs` 里且采集成功） |
 | 地图画 | 持有已填地图的**物品展示框 / 发光展示框**：读实体拿坐标与朝向、读 `data/map_*.dat` 拿颜色，再作为 1×1 面片补进瓦片几何。实体存放位置与物品 NBT 两种写法都支持：Paper / 原版 1.20.2+ 的 `entities/r.X.Z.mca`，以及更早版本的区块 NBT；地图编号读 1.20.5+ 的 `Item.components."minecraft:map_id"`，回落 `Item.tag.map`；按维度定位（下界 `DIM-1`、末地 `DIM1`） |
+| 空展示框 | 展示框里没放地图、或地图文件（`data/map_*.dat`）缺失时，**画出框体本身**（内置框体贴图），不再留下「墙上一片空」 |
 
 **不会渲染**：盔甲架、画、掉落物、船/矿车、生物、玩家等**任何其它实体**——
 它们不在方块数据里，当前也没有通用实体几何管线（Phase 7 只做了地图画这一种）。
@@ -322,6 +324,24 @@ pnpm -r build                       # 全部包 + 应用构建
 > 版本体检：渲染开始时会把**存档版本**（`level.dat`）与**采集版本**（`-PmcVersion` / `render.mc-version`）、
 > **资源包 jar 文件名里的版本**对一遍，不一致就打印醒目警告——紫块（贴图名随版本改名，如 1.20.3 起
 > `grass` → `short_grass`）和空洞（模型对不上）最常见的成因就是它。
+
+### 跨版本兼容兜底（不限定某个版本）
+
+工具链按「**证据优先**」自动适配，而不是写死版本：
+
+- **采集版本自动判定**：`-PmcVersion` / `render.mc-version` **留空即自动**，按
+  ①显式指定 → ②资源包 jar 文件名（`client-1.21.1.jar`）→ ③存档 `level.dat` 版本 → ④兜底常量
+  的优先级决定，并在日志里注明判据。示例里仍写着 `1.20.1` 只是兜底值，不代表只能跑这个版本。
+- **贴图改名兜底**：贴图 id 随版本改名时（1.20.3 `grass`→`short_grass`、1.17 `grass_path`→`dirt_path`、
+  1.13 flattening 的羊毛/陶瓦/混凝土/染色玻璃/地毯/潜影盒前后缀互换、1.14 的木板与原木命名…）
+  会按候选表自动用同义贴图顶替，并把这批「谁顶替了谁」列在日志里——画面不再碎成品红，
+  但版本不一致本身仍建议对齐（警告已经给出具体是哪两个版本）。
+- **实体存放与物品 NBT**：Paper / 原版 1.20.2+ 的 `entities/r.X.Z.mca` 与更早的区块 `entities` 列表都读；
+  地图编号兼容 1.20.5+ 数据组件与旧 `tag.map`；下界/末地按 `DIM-1`/`DIM1` 定位。
+- **区域文件压缩**：支持 zlib（默认）与 gzip；遇到 LZ4 压缩的 region 会**明确报错**说明不支持
+  （需要额外依赖），不会静默产出空地图。
+- **平台无关**：路径全部走 `Path`/`File.pathSeparator`，队列的租约与**文件替换竞态**在 Windows 上也有针对性处理
+  （读作业文件失败会退避重试），不依赖某个操作系统的文件名/锁语义。
 
 分片阶段（bake/tile/lod 的 region 分片）有两种跑法：本地顺序/并行执行，或交给**分片作业队列**
 （`ShardQueuePort`）——入队后本地 worker 池与其他进程一起抢占，检查点仍按分片记录，

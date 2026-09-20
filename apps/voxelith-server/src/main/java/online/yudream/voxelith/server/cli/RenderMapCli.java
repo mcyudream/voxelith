@@ -15,6 +15,7 @@ import online.yudream.voxelith.lod.application.LodOutcome;
 import online.yudream.voxelith.lod.domain.heightfield.AerialRaster;
 import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
+import online.yudream.voxelith.server.support.McVersionResolver;
 import online.yudream.voxelith.resource.infrastructure.bootstrap.ResourceContextBootstrap;
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
 import online.yudream.voxelith.sharedkernel.vo.RegionPos;
@@ -171,7 +172,8 @@ public final class RenderMapCli {
 
             // 地图画：展示框是实体、地图颜色在 data/map_*.dat，方块链路完全看不到，
             // 所以在 tile 之前把它们读出来补成面片 + 把地图注册成图集贴图
-            MapArtInjector mapArt = new MapArtInjector(new CatalogTexturePixelSource(catalog));
+            CatalogTexturePixelSource pixelSource = new CatalogTexturePixelSource(catalog);
+            MapArtInjector mapArt = new MapArtInjector(pixelSource);
             MeshesAndMapArt prepared = injectMapArt(options, regionWindow, meshes, mapArt, out);
             meshes = prepared.meshes();
 
@@ -184,6 +186,7 @@ public final class RenderMapCli {
                     hires.tiles().size(), hires.atlasSize(), hires.textureCount(),
                     (System.currentTimeMillis() - tTile) / 1000.0);
             reportMissingTextures(hires, out);
+            reportTextureSubstitutions(pixelSource, out);
 
             GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                     TileContextBootstrap.openTextureColorSampler(catalog),
@@ -261,10 +264,11 @@ public final class RenderMapCli {
         }
         Path vanillaJar = options.packs().getFirst();
         List<Path> modJars = List.copyOf(options.packs().subList(1, options.packs().size()));
-        out.printf("首次渲染：先采集模型几何（mc=%s loader=%s mods=%d，约 1 分钟）%n",
-                options.mcVersion(), options.loaderVersion(), modJars.size());
+        String mcVersion = effectiveMcVersion(options);
+        out.printf("首次渲染：先采集模型几何（mc=%s [%s] loader=%s mods=%d，约 1 分钟）%n",
+                mcVersion, mcVersionSource(options), options.loaderVersion(), modJars.size());
         HarvestCliOptions harvest = new HarvestCliOptions(
-                options.mcVersion(), options.loaderVersion(), options.workDir(), vanillaJar, modJars,
+                mcVersion, options.loaderVersion(), options.workDir(), vanillaJar, modJars,
                 options.workerClasspath(), options.workDir().resolve("models-cache"),
                 30, false, false);
         HarvestModelsCli.run(harvest);
@@ -354,6 +358,10 @@ public final class RenderMapCli {
         Map<ChunkPos, BakedChunkMeshData> injected = mapArt.inject(frames, meshes);
         out.printf("%n地图画：展示框 %d 个，地图 %d 张（读到颜色 %d 张），已补入瓦片几何%n",
                 frames.size(), mapIds.size(), loaded);
+        if (mapArt.framesWithoutMap() > 0) {
+            out.printf("  其中 %d 个展示框没有可用地图数据（data/map_*.dat 缺失或未识别），"
+                    + "已按原版观感画出空框%n", mapArt.framesWithoutMap());
+        }
         return new MeshesAndMapArt(injected, frames.size(), loaded);
     }
 
@@ -436,14 +444,37 @@ public final class RenderMapCli {
 
     /** 读 level.dat 拿存档版本；读不到（不是标准存档/权限问题）就不产告警，绝不因此中断渲染。 */
     private static List<String> versionWarnings(RenderMapOptions options) {
-        String worldVersion;
-        try {
-            worldVersion = WorldContextBootstrap.readLevelInfo(options.worldDir()).versionName();
-        } catch (RuntimeException e) {
-            return List.of();
-        }
+        String worldVersion = worldVersionOrNull(options);
         List<String> packNames = options.packs().stream().map(Path::getFileName).map(Path::toString).toList();
-        return versionWarnings(worldVersion, options.mcVersion(), packNames);
+        // 比的是**实际会用的**采集版本（可能是资源包文件名推出来的），不是写死的默认值——
+        // 否则「世界 1.21 + 包 1.21」也会被误报成版本不一致
+        return versionWarnings(worldVersion, effectiveMcVersion(options), packNames);
+    }
+
+    /** 存档版本名；读不到返回 null（不抛错）。 */
+    private static String worldVersionOrNull(RenderMapOptions options) {
+        try {
+            return WorldContextBootstrap.readLevelInfo(options.worldDir()).versionName();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** 本次实际使用的采集版本（显式 → 资源包文件名 → 存档版本 → 兜底）。 */
+    static String effectiveMcVersion(RenderMapOptions options) {
+        String packName = options.packs().isEmpty()
+                ? null
+                : options.packs().getFirst().getFileName().toString();
+        return McVersionResolver.resolve(options.mcVersion(), packName, worldVersionOrNull(options),
+                RenderMapOptions.DEFAULT_MC_VERSION);
+    }
+
+    /** 采集版本的判据来源（写进日志）。 */
+    static String mcVersionSource(RenderMapOptions options) {
+        String packName = options.packs().isEmpty()
+                ? null
+                : options.packs().getFirst().getFileName().toString();
+        return McVersionResolver.source(options.mcVersion(), packName, worldVersionOrNull(options));
     }
 
     /**
@@ -596,6 +627,24 @@ public final class RenderMapCli {
         if (tiles.untexturedQuads() > 0) {
             out.printf("无贴图面 %d 个（模型自身没引用贴图，按原版语义渲染为兜底格）%n",
                     tiles.untexturedQuads());
+        }
+    }
+
+    /**
+     * 报了「别名顶替」：贴图名随版本改名时管线自动用新旧名互兜底，
+     * 画面不再是品红；但版本不一致本身仍需修，所以这里明确列出来。
+     */
+    private static void reportTextureSubstitutions(CatalogTexturePixelSource pixelSource, PrintStream out) {
+        List<Map.Entry<String, String>> substitutions = pixelSource.substitutions();
+        if (substitutions.isEmpty()) {
+            return;
+        }
+        out.printf("跨版本贴图改名兜底 %d 种（已自动用同义贴图代替，不再是品红；建议仍对齐版本）:%n",
+                substitutions.size());
+        substitutions.stream().limit(20).forEach(entry ->
+                out.printf("    %-46s → %s%n", entry.getKey(), entry.getValue()));
+        if (substitutions.size() > 20) {
+            out.printf("    …… 另有 %d 种%n", substitutions.size() - 20);
         }
     }
 
