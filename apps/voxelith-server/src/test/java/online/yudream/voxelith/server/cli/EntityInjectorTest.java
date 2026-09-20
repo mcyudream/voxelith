@@ -4,6 +4,8 @@ import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
 import online.yudream.voxelith.bake.application.dto.BakedQuadData;
 import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
 import online.yudream.voxelith.sharedkernel.vo.Identifier;
+import online.yudream.voxelith.tile.domain.atlas.AtlasTexture;
+import online.yudream.voxelith.world.domain.world.EntityEquipment;
 import online.yudream.voxelith.world.domain.world.PlacedEntity;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -201,5 +203,117 @@ class EntityInjectorTest {
         Map<ChunkPos, BakedChunkMeshData> out = injector.inject(
                 List.of(new PlacedEntity("minecraft:pig", 0, 64, 0, 0f, false, false, false)), Map.of());
         assertThat(out).isEmpty();
+    }
+
+    // ---------------------------------------------------------------- 装备
+
+    /** 只供给少量盔甲层/物品贴图的桩：用于验证解析回退、补边与几何生成。 */
+    private static EntityInjector injectorWithTextures() {
+        return new EntityInjector(id -> {
+            String key = id.toString();
+            // 1.21.2+ 的盔甲层贴图布局（菱形：只有 iron 走这条路）
+            if (key.equals("minecraft:entity/equipment/humanoid/iron")
+                    || key.equals("minecraft:entity/equipment/humanoid_leggings/iron")) {
+                return Optional.of(new AtlasTexture(id, 64, 32, new int[64 * 32]));
+            }
+            // 旧版 models/armor 布局：只有 diamond 存在（模拟包里缺其它材质）
+            if (key.equals("minecraft:models/armor/diamond_layer_1")
+                    || key.equals("minecraft:models/armor/diamond_layer_2")) {
+                return Optional.of(new AtlasTexture(id, 64, 32, new int[64 * 32]));
+            }
+            if (key.equals("minecraft:item/diamond_sword")) {
+                return Optional.of(new AtlasTexture(id, 16, 16, new int[16 * 16]));
+            }
+            return Optional.empty();
+        });
+    }
+
+    private static PlacedEntity equipped(EntityEquipment equipment, boolean showArms) {
+        return new PlacedEntity(PlacedEntity.ARMOR_STAND, 0, 64, 0, 0f, false, showArms, false,
+                equipment);
+    }
+
+    @Test
+    @DisplayName("盔甲贴图按回退链解析进 textureIds；优先 1.21.2+ 布局，旧布局兜底")
+    void armorTextureResolvedThroughFallbackChain() {
+        EntityInjector injector = injectorWithTextures();
+        injector.prepare(List.of(equipped(new EntityEquipment(null, null,
+                "minecraft:iron_chestplate", "minecraft:diamond_helmet",
+                "minecraft:diamond_sword", null), true)));
+
+        assertThat(injector.textureIds())
+                .as("iron 在包里有新布局，优先用之")
+                .contains("minecraft:entity/equipment/humanoid/iron")
+                .doesNotContain("minecraft:models/armor/iron_layer_1");
+        assertThat(injector.textureIds())
+                .as("diamond 只有旧布局，回落到 models/armor")
+                .contains("minecraft:models/armor/diamond_layer_1");
+        assertThat(injector.textureIds())
+                .as("手持物用物品精灵片")
+                .contains("minecraft:item/diamond_sword");
+    }
+
+    @Test
+    @DisplayName("非方形盔甲层贴图（64×32）补成正方形供给图集，避免打包时纵向拉伸")
+    void nonSquareArmorTexturePaddedToSquare() {
+        EntityInjector injector = injectorWithTextures();
+        injector.prepare(List.of(equipped(new EntityEquipment(null, null,
+                "minecraft:iron_chestplate", null, null, null), false)));
+
+        Optional<AtlasTexture> texture = injector.load(
+                Identifier.parse("minecraft:entity/equipment/humanoid/iron"));
+        assertThat(texture).isPresent();
+        assertThat(texture.get().cellWidth()).isEqualTo(texture.get().cellHeight());
+    }
+
+    @Test
+    @DisplayName("穿甲持物的架子：本体之外生成盔甲与手持物面片，绕序仍朝外；计数正确")
+    void equipmentQuadsInjectedWithValidWinding() {
+        EntityInjector injector = injectorWithTextures();
+        PlacedEntity stand = equipped(new EntityEquipment(
+                "minecraft:iron_boots", null, "minecraft:diamond_chestplate",
+                "minecraft:iron_helmet", "minecraft:diamond_sword", null), true);
+        Map<ChunkPos, BakedChunkMeshData> out = injector.inject(List.of(stand), Map.of());
+        List<BakedQuadData> quads = out.get(new ChunkPos(0, 0)).quads();
+        int bodyQuads = EntityInjector.armorStandQuads(stand, EntityInjector.ARMOR_STAND_TEXTURE).size();
+        assertThat(quads.size()).as("本体 + 头/胸/脚三件盔甲 + 主手精灵片").isGreaterThan(bodyQuads);
+        for (BakedQuadData quad : quads) {
+            float[] normal = quad.normal();
+            float[] winding = windingNormal(quad);
+            float dot = winding[0] * normal[0] + winding[1] * normal[1] + winding[2] * normal[2];
+            assertThat(dot).as("装备面片绕序也要朝外").isGreaterThan(0f);
+        }
+        assertThat(injector.armorPiecesRendered()).isEqualTo(3);
+        assertThat(injector.armorPiecesMissingTexture()).isZero();
+        assertThat(injector.heldItemsRendered()).isEqualTo(1);
+        assertThat(injector.heldItemsMissingTexture()).isZero();
+    }
+
+    @Test
+    @DisplayName("没有手臂的架子不画手持物；缺贴图的盔甲整格跳过并计数")
+    void heldItemsNeedArmsAndMissingTexturesAreCounted() {
+        EntityInjector injector = injectorWithTextures();
+        PlacedEntity noArms = equipped(new EntityEquipment(null, null, "minecraft:leather_chestplate",
+                null, "minecraft:diamond_sword", null), false);
+        Map<ChunkPos, BakedChunkMeshData> out = injector.inject(List.of(noArms), Map.of());
+        List<BakedQuadData> quads = out.get(new ChunkPos(0, 0)).quads();
+        assertThat(quads).as("leather 无贴图 → 只有本体面片").hasSize(
+                EntityInjector.armorStandQuads(noArms, EntityInjector.ARMOR_STAND_TEXTURE).size());
+        assertThat(quads).extracting(BakedQuadData::texture)
+                .as("任何面片都不引用缺贴图的装备")
+                .doesNotContain("minecraft:models/armor/leather_layer_1");
+        assertThat(injector.armorPiecesRendered()).isZero();
+        assertThat(injector.armorPiecesMissingTexture()).isEqualTo(1);
+        assertThat(injector.heldItemsRendered()).as("showArms=false 不解析也不渲染手持物").isZero();
+    }
+
+    @Test
+    @DisplayName("armorMaterial：从物品 id 取材质名（turtle_helmet → turtle），非盔甲返回 null")
+    void extractsArmorMaterial() {
+        assertThat(EntityInjector.armorMaterial("minecraft:turtle_helmet")).isEqualTo("turtle");
+        assertThat(EntityInjector.armorMaterial("minecraft:netherite_boots")).isEqualTo("netherite");
+        assertThat(EntityInjector.armorMaterial("minecraft:diamond_sword")).isNull();
+        assertThat(EntityInjector.armorMaterial("minecraft:elytra")).isNull();
+        assertThat(EntityInjector.armorMaterial(null)).isNull();
     }
 }

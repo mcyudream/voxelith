@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -95,5 +96,68 @@ class AnvilEntityReaderTest {
     void emptyWhenNoEntities(@TempDir Path worldRoot) {
         assertThat(AnvilEntityReader.of(worldRoot, "minecraft:overworld")
                 .entities(new RegionPos(5, 5))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("装备（旧版格式）：ArmorItems=[脚,腿,胸,头]、HandItems=[主手,副手]，空槽为 null")
+    void readsLegacyEquipment(@TempDir Path worldRoot) {
+        RegionPos region = new RegionPos(0, 0);
+        Map<String, Tag> entries = new LinkedHashMap<>();
+        entries.put("id", new StringTag("minecraft:armor_stand"));
+        entries.put("Pos", new ListTag(Tag.DOUBLE, List.of(
+                new DoubleTag(0), new DoubleTag(64), new DoubleTag(0))));
+        entries.put("ArmorItems", new ListTag(Tag.COMPOUND, List.of(
+                item("minecraft:iron_boots"),
+                new CompoundTag(Map.of()),
+                item("minecraft:diamond_chestplate"),
+                item("minecraft:iron_helmet"))));
+        entries.put("HandItems", new ListTag(Tag.COMPOUND, List.of(
+                item("minecraft:diamond_sword"),
+                new CompoundTag(Map.of()))));
+        writeEntities(worldRoot, region,
+                List.of(new CompoundTag(entries)), "Entities");
+
+        List<PlacedEntity> entities = AnvilEntityReader.of(worldRoot, "minecraft:overworld")
+                .entities(region);
+        assertThat(entities).hasSize(1);
+        var equipment = entities.getFirst().equipment();
+        assertThat(equipment.feet()).isEqualTo("minecraft:iron_boots");
+        assertThat(equipment.legs()).as("空槽（空复合标签）读成 null").isNull();
+        assertThat(equipment.chest()).isEqualTo("minecraft:diamond_chestplate");
+        assertThat(equipment.head()).isEqualTo("minecraft:iron_helmet");
+        assertThat(equipment.mainHand()).isEqualTo("minecraft:diamond_sword");
+        assertThat(equipment.offHand()).isNull();
+    }
+
+    @Test
+    @DisplayName("装备（1.20.5+ 格式）：equipment 复合标签按槽位键读出，缺的槽为 null")
+    void readsItemComponentEquipment(@TempDir Path worldRoot) {
+        RegionPos region = new RegionPos(0, 0);
+        Map<String, Tag> entries = new LinkedHashMap<>();
+        entries.put("id", new StringTag("minecraft:armor_stand"));
+        entries.put("Pos", new ListTag(Tag.DOUBLE, List.of(
+                new DoubleTag(0), new DoubleTag(64), new DoubleTag(0))));
+        entries.put("equipment", new CompoundTag(Map.of(
+                "mainhand", item("minecraft:golden_sword"),
+                "head", item("minecraft:turtle_helmet"),
+                "chest", item("minecraft:netherite_chestplate"))));
+        writeEntities(worldRoot, region,
+                List.of(new CompoundTag(entries)), "Entities");
+
+        var equipment = AnvilEntityReader.of(worldRoot, "minecraft:overworld")
+                .entities(region).getFirst().equipment();
+        assertThat(equipment.head()).isEqualTo("minecraft:turtle_helmet");
+        assertThat(equipment.chest()).isEqualTo("minecraft:netherite_chestplate");
+        assertThat(equipment.legs()).isNull();
+        assertThat(equipment.feet()).isNull();
+        assertThat(equipment.mainHand()).isEqualTo("minecraft:golden_sword");
+        assertThat(equipment.offHand()).isNull();
+    }
+
+    /** 存档里的物品复合标签：只关心 id（组件/标签不建模）。 */
+    private static CompoundTag item(String id) {
+        return new CompoundTag(Map.of(
+                "id", new StringTag(id),
+                "count", new ByteTag((byte) 1)));
     }
 }

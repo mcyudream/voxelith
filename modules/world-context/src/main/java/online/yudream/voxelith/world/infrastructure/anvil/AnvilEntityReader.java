@@ -6,6 +6,7 @@ import online.yudream.voxelith.world.domain.nbt.CompoundTag;
 import online.yudream.voxelith.world.domain.nbt.DoubleTag;
 import online.yudream.voxelith.world.domain.nbt.ListTag;
 import online.yudream.voxelith.world.domain.nbt.Tag;
+import online.yudream.voxelith.world.domain.world.EntityEquipment;
 import online.yudream.voxelith.world.domain.world.PlacedEntity;
 import online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap;
 
@@ -17,8 +18,9 @@ import java.util.List;
  * 存档实体读取（当前用于盔甲架的简化几何）。
  *
  * <p>支持的实体类型是一张**显式白名单**：宁可少画，也不要凭空给不认识的实体编几何。
- * 目前只有 {@code minecraft:armor_stand}；盔甲/手持物品等装备不渲染（需要实体贴图，
- * 不在方块图集里），姿态（Pose）也按直立处理。</p>
+ * 目前只有 {@code minecraft:armor_stand}；身上的装备（四格盔甲 + 双手物品）一并读出，
+ * 两种存档格式都认：1.20.5+ 的 {@code equipment{feet,legs,chest,head,mainhand,offhand}}
+ * 与旧版的 {@code ArmorItems} / {@code HandItems} 列表。姿态（Pose）按直立处理。</p>
  */
 public final class AnvilEntityReader implements EntityReader {
 
@@ -57,9 +59,48 @@ public final class AnvilEntityReader implements EntityReader {
                     yawOf(entity),
                     flag(entity, "Small"),
                     flag(entity, "ShowArms"),
-                    flag(entity, "NoBasePlate")));
+                    flag(entity, "NoBasePlate"),
+                    equipmentOf(entity)));
         }
         return List.copyOf(out);
+    }
+
+    /**
+     * 装备槽。1.20.5+ 存进 {@code equipment} 复合标签；旧版是
+     * {@code ArmorItems} = [脚, 腿, 胸, 头] 与 {@code HandItems} = [主手, 副手] 两个列表，
+     * 空槽是没有任何键的空复合标签。物品本体只有 {@code id} 被读取。
+     */
+    private static EntityEquipment equipmentOf(CompoundTag entity) {
+        if (entity.get("equipment").orElse(null) instanceof CompoundTag equipment) {
+            return new EntityEquipment(
+                    itemId(equipment, "feet"), itemId(equipment, "legs"),
+                    itemId(equipment, "chest"), itemId(equipment, "head"),
+                    itemId(equipment, "mainhand"), itemId(equipment, "offhand"));
+        }
+        ListTag armor = entity.contains("ArmorItems") ? entity.getList("ArmorItems") : null;
+        ListTag hand = entity.contains("HandItems") ? entity.getList("HandItems") : null;
+        if (armor == null && hand == null) {
+            return EntityEquipment.EMPTY;
+        }
+        return new EntityEquipment(
+                armor != null && armor.size() > 0 ? itemIdOf(armor.get(0)) : null,
+                armor != null && armor.size() > 1 ? itemIdOf(armor.get(1)) : null,
+                armor != null && armor.size() > 2 ? itemIdOf(armor.get(2)) : null,
+                armor != null && armor.size() > 3 ? itemIdOf(armor.get(3)) : null,
+                hand != null && hand.size() > 0 ? itemIdOf(hand.get(0)) : null,
+                hand != null && hand.size() > 1 ? itemIdOf(hand.get(1)) : null);
+    }
+
+    private static String itemId(CompoundTag parent, String key) {
+        return parent.get(key).orElse(null) instanceof CompoundTag item && item.contains("id")
+                ? item.getString("id")
+                : null;
+    }
+
+    private static String itemIdOf(Tag tag) {
+        return tag instanceof CompoundTag item && item.contains("id")
+                ? item.getString("id")
+                : null;
     }
 
     /** {@code Rotation[0]} 是水平朝向（度）；缺省 0 = 朝南，与实体默认朝向一致。 */

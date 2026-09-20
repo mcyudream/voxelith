@@ -1,19 +1,19 @@
-package online.yudream.voxelith.server.cli;
-
-import online.yudream.voxelith.bake.application.BakeChunksUseCase;
-import online.yudream.voxelith.bake.application.BakeCommand;
-import online.yudream.voxelith.bake.application.BakeOutcome;
-import online.yudream.voxelith.bake.application.BakedMeshMapper;
-import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
-import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
-import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
-import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
-import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
-import online.yudream.voxelith.lod.application.HeightfieldStore;
-import online.yudream.voxelith.lod.application.LodCommand;
-import online.yudream.voxelith.lod.application.LodOutcome;
-import online.yudream.voxelith.lod.domain.heightfield.AerialRaster;
-import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
+package online.yudream.voxelith.server.cli;
+
+import online.yudream.voxelith.bake.application.BakeChunksUseCase;
+import online.yudream.voxelith.bake.application.BakeCommand;
+import online.yudream.voxelith.bake.application.BakeOutcome;
+import online.yudream.voxelith.bake.application.BakedMeshMapper;
+import online.yudream.voxelith.bake.application.dto.BakedChunkMeshData;
+import online.yudream.voxelith.bake.domain.geometry.PrebakedQuadSource;
+import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink;
+import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
+import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
+import online.yudream.voxelith.lod.application.HeightfieldStore;
+import online.yudream.voxelith.lod.application.LodCommand;
+import online.yudream.voxelith.lod.application.LodOutcome;
+import online.yudream.voxelith.lod.domain.heightfield.AerialRaster;
+import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
 import online.yudream.voxelith.server.support.McVersionResolver;
 import online.yudream.voxelith.resource.infrastructure.bootstrap.ResourceContextBootstrap;
@@ -354,12 +354,27 @@ public final class RenderMapCli {
         if (entities.isEmpty()) {
             return meshes;
         }
+        // 先解析装备贴图（缺贴图的按件跳过），再连同本体几何一起注入
+        injector.prepare(entities);
         Map<ChunkPos, BakedChunkMeshData> injected = injector.inject(entities, meshes);
         long armorStands = entities.stream()
                 .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
                 .count();
-        out.printf("%n实体几何：盔甲架 %d 个（简化盒体，含小型/手臂/底座与朝向），已补入瓦片几何%n",
-                armorStands);
+        int armorPieces = entities.stream()
+                .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                .mapToInt(e -> e.equipment().armorSlotsFilled())
+                .sum();
+        int heldItems = entities.stream()
+                .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                .mapToInt(e -> e.equipment().handSlotsFilled())
+                .sum();
+        out.printf("%n实体几何：盔甲架 %d 个（简化盒体，含小型/手臂/底座与朝向；"
+                        + "装备：盔甲 %d 件、手持物 %d 件），已补入瓦片几何%n",
+                armorStands, armorPieces, heldItems);
+        if (injector.armorPiecesMissingTexture() > 0 || injector.heldItemsMissingTexture() > 0) {
+            out.printf("  装备缺贴图跳过：盔甲 %d 件、手持物 %d 件（资源包里找不到对应贴图）%n",
+                    injector.armorPiecesMissingTexture(), injector.heldItemsMissingTexture());
+        }
         return injected;
     }
 
@@ -754,10 +769,21 @@ public final class RenderMapCli {
             }
         }
         if (!entities.isEmpty()) {
-            out.printf("实体几何：盔甲架 %d 个将在各批注入（贴图用内置木纹）%n",
+            entityInjector.prepare(entities);
+            int armorPieces = entities.stream()
+                    .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                    .mapToInt(e -> e.equipment().armorSlotsFilled())
+                    .sum();
+            int heldItems = entities.stream()
+                    .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
+                    .mapToInt(e -> e.equipment().handSlotsFilled())
+                    .sum();
+            out.printf("实体几何：盔甲架 %d 个将在各批注入（装备：盔甲 %d 件、手持物 %d 件，"
+                            + "贴图已进共享图集）%n",
                     entities.stream()
                             .filter(online.yudream.voxelith.world.domain.world.PlacedEntity::isArmorStand)
-                            .count());
+                            .count(),
+                    armorPieces, heldItems);
         }
         // 静态解析（无采集产物）时贴图表拿不到，只能靠「用到的都在里面」这一超集兜底：
         // 记下提示，让用户知道缺贴图的可能来源
@@ -834,6 +860,11 @@ public final class RenderMapCli {
         }
 
         // 各批的瓦片摘要合在一起发布：清单的包围盒、hires 图集、LOD 层级都按整图算
+        if (!entities.isEmpty()) {
+            out.printf("实体装备渲染：盔甲 %d 件（缺贴图跳过 %d）、手持物 %d 件（缺贴图跳过 %d）%n",
+                    entityInjector.armorPiecesRendered(), entityInjector.armorPiecesMissingTexture(),
+                    entityInjector.heldItemsRendered(), entityInjector.heldItemsMissingTexture());
+        }
         TileOutcome merged = new TileOutcome(
                 all,
                 options.workDir().resolve("atlas.png"),
