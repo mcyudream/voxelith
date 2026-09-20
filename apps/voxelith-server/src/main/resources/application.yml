@@ -9,11 +9,13 @@ spring:
       file-size-threshold: 8MB
 
 server:
-  port: 8081
+  # 本机 8080/8081 被 WSL 的 wslrelay.exe 长期占用（WSL 里跑着别的 Spring 应用），
+  # 连上去只会被直接掐断连接——固定 8090，别改回 8081
+  port: 8090
   tomcat:
     max-swallow-size: -1
 
-# Yudream Voxelith Map Core 全局配置（8080 为本机其他服务占用，固定 8081）
+# Yudream Voxelith Map Core 全局配置（服务端口见上方 server.port：本机 8080/8081 被 wslrelay 占用，固定 8090）
 yudream:
   voxelith:
     # 渲染工作目录：中间产物（逐链路确认用）与最终发布产物

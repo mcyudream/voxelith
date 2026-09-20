@@ -16,10 +16,13 @@ import {
   type CameraControls,
   type CameraMode,
   type DeviceProfile,
+  type TerrainMedium,
+  type TerrainProbe,
 } from "@yudream/voxelith-viewer";
 import type { MapManifest } from "@yudream/voxelith-core";
 import * as THREE from "three";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { deleteMap } from "./api";
 import UploadDialog from "./components/UploadDialog.vue";
 
 interface MapSummary {
@@ -38,7 +41,7 @@ const MODE_LABELS: Record<CameraMode, string> = {
 
 const MODE_HINTS: Record<CameraMode, string> = {
   flight: "点击画面锁定鼠标 · WASD 移动 · Space/Ctrl 升降 · Shift 加速 · 滚轮调速 · Esc 释放鼠标",
-  firstPerson: "点击画面锁定鼠标 · WASD 行走 · Space 跳跃 · Shift 疾跑 · Esc 释放鼠标",
+  firstPerson: "点击画面锁定鼠标 · WASD 行走 · Space 跳跃（水里按住 = 上浮）· Shift/Ctrl 疾跑 · Esc 释放鼠标 · 生存式重力/碰撞：半格自动迈、一格坎要跳、水里缓慢下沉、草木不挡路",
   tiltOrbit: "左键拖拽/WASD 移动 · 右键拖拽/Alt+WASD 旋转倾斜 · 滚轮/+- 缩放",
 };
 
@@ -47,6 +50,8 @@ const maps = ref<MapSummary[]>([]);
 /** 列表里新出现、用户还没切过去的地图：工具栏据此提示「新地图已就绪」。 */
 const newMaps = ref<MapSummary[]>([]);
 const activeMapId = ref("");
+/** 删除当前地图进行中（防重复点击） */
+const deletingMap = ref(false);
 const manifest = ref<MapManifest | null>(null);
 const loadedTiles = ref(0);
 const failedTiles = ref(0);
@@ -113,6 +118,108 @@ function mapBaseUrl(mapId: string): string {
   return `/maps/${encodeURIComponent(mapId)}`;
 }
 
+/** 地形射线复用对象（第一人称每帧多次探测，避免逐帧分配） */
+const terrainRaycaster = new THREE.Raycaster();
+const terrainRayOrigin = new THREE.Vector3();
+const terrainRayDirection = new THREE.Vector3();
+/** 竖直射线起点留在地图最高点之上的余量（方块） */
+const TERRAIN_SKY_MARGIN = 32;
+/** 第一人称可行走范围相对地图边界的内缩（方块） */
+const FIRST_PERSON_EDGE_MARGIN = 1;
+
+/**
+ * 渲染空间射线求交（第一人称碰撞用），命中返回最近距离。
+ *
+ * 只打 hires（level 0）瓦片的**碰撞代理**：LOD 柱顶取的是 2^L 方块内的**最高**表面，
+ * 粗层顶面能比真实地面高几十格，拿它当地面人就被托在半空；代理按区域切了子网格，
+ * 射线只扫穿过的 1~2 块（密集瓦片整片求交要几毫秒）。沿途只取起点/终点两列
+ * （射线都很短，不会跨第三片瓦片）。
+ */
+function castTerrainRay(
+  x: number,
+  y: number,
+  z: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  maxDistance: number,
+  medium: TerrainMedium = "solid",
+): number | null {
+  if (!engine || !tileManager || maxDistance <= 0) {
+    return null;
+  }
+  // 实体 / 水面各有一套代理：实体已剔除植物与水面，水面单独用于游泳与浮沉
+  const start = medium === "water" ? tileManager.waterProxyAt(x, z) : tileManager.solidProxyAt(x, z);
+  const end = medium === "water"
+    ? tileManager.waterProxyAt(x + dx * maxDistance, z + dz * maxDistance)
+    : tileManager.solidProxyAt(x + dx * maxDistance, z + dz * maxDistance);
+  const groups: THREE.Object3D[] = [];
+  if (start) {
+    groups.push(start);
+  }
+  if (end && end !== start) {
+    groups.push(end);
+  }
+  if (groups.length === 0) {
+    return null;
+  }
+  terrainRaycaster.set(
+    terrainRayOrigin.set(x, y, z),
+    terrainRayDirection.set(dx, dy, dz),
+  );
+  terrainRaycaster.near = 0;
+  terrainRaycaster.far = maxDistance;
+  const hits = terrainRaycaster.intersectObjects(groups, true);
+  return hits.length > 0 ? hits[0]!.distance : null;
+}
+
+/**
+ * 第一人称地形探测：脚下地面、撞墙、撞头都走这里。
+ * 探不到地形（视距外 / 图外 / 瓦片还没到）时返回 null，控制器据此维持原高度而不是下沉。
+ */
+const terrainProbe: TerrainProbe = {
+  topSurfaceY(x, z, medium = "solid") {
+    const m = manifest.value;
+    if (!m) {
+      return null;
+    }
+    const top = m.boundsMax[1] - floatingOrigin.origin.y + TERRAIN_SKY_MARGIN;
+    const bottom = m.boundsMin[1] - floatingOrigin.origin.y;
+    const hit = castTerrainRay(x, top, z, 0, -1, 0, top - bottom, medium);
+    return hit === null ? null : top - hit;
+  },
+  groundBelow(x, z, fromY, maxDrop = Number.POSITIVE_INFINITY, medium = "solid") {
+    const m = manifest.value;
+    const floor = m ? m.boundsMin[1] - floatingOrigin.origin.y : fromY - 4096;
+    const drop = Math.min(maxDrop, fromY - floor);
+    if (drop <= 0) {
+      return null;
+    }
+    const hit = castTerrainRay(x, fromY, z, 0, -1, 0, drop, medium);
+    return hit === null ? null : fromY - hit;
+  },
+  castRay: castTerrainRay,
+};
+
+/** 第一人称水平活动范围：收进地图包围盒内，免得走出图边缘悬空（渲染空间就地修改）。 */
+function clampToMapBounds(position: THREE.Vector3): void {
+  const m = manifest.value;
+  if (!m) {
+    return;
+  }
+  const origin = floatingOrigin.origin;
+  position.x = THREE.MathUtils.clamp(
+    position.x,
+    m.boundsMin[0] - origin.x + FIRST_PERSON_EDGE_MARGIN,
+    m.boundsMax[0] - origin.x - FIRST_PERSON_EDGE_MARGIN,
+  );
+  position.z = THREE.MathUtils.clamp(
+    position.z,
+    m.boundsMin[2] - origin.z + FIRST_PERSON_EDGE_MARGIN,
+    m.boundsMax[2] - origin.z - FIRST_PERSON_EDGE_MARGIN,
+  );
+}
+
 function createControls(m: CameraMode, tiltTarget?: THREE.Vector3): CameraControls {
   if (!engine || !canvasRef.value) {
     throw new Error("engine not ready");
@@ -128,6 +235,9 @@ function createControls(m: CameraMode, tiltTarget?: THREE.Vector3): CameraContro
     return new FirstPersonControls(engine.camera, canvas, {
       sensitivity: settings.sensitivity,
       groundY: settings.groundY,
+      // 生存式移动：脚下地面与碰撞全部来自 hires 瓦片几何的射线探测
+      probe: terrainProbe,
+      clampXZ: clampToMapBounds,
     });
   }
   // 俯视倾斜：默认以相机前方 60 格的地表点为目标，从当前视角平滑过渡
@@ -164,7 +274,19 @@ async function openMap(mapId: string): Promise<void> {
     const cx = (m.boundsMin[0] + m.boundsMax[0]) / 2;
     const cz = (m.boundsMin[2] + m.boundsMax[2]) / 2;
     engine.camera.position.set(cx, m.boundsMax[1] + 60, cz + 80);
-    engine.camera.lookAt(cx, m.boundsMax[1], cz);
+    // 出生视角必须保持水平：若俯视地图中心（原实现 -37° 俯角），"前进"会自带俯冲分量，
+    // 进图一奔跑就扎进地形下方——方块几何是单面渲染，从下往上看整个世界被背面剔除，
+    // 画面在地表与纯天空色之间来回翻转（表现为屏幕闪烁）。
+    engine.camera.lookAt(cx, m.boundsMax[1] + 60, cz);
+    // 排障/分享用：?pos=x,y,z 直接落到指定世界坐标（第一人称会再落到该列表面上）
+    const posParam = new URLSearchParams(window.location.search).get("pos");
+    if (posParam) {
+      const [px, py, pz] = posParam.split(",").map(Number);
+      if (px !== undefined && py !== undefined && pz !== undefined
+          && Number.isFinite(px) && Number.isFinite(py) && Number.isFinite(pz)) {
+        engine.camera.position.set(px, py, pz);
+      }
+    }
     // 重建当前控制器以吸收新机位朝向
     controls?.dispose();
     controls = createControls(mode.value);
@@ -215,6 +337,37 @@ function selectMap(e: Event): void {
 function forgetNewMap(mapId: string): void {
   if (newMaps.value.some((m) => m.id === mapId)) {
     newMaps.value = newMaps.value.filter((m) => m.id !== mapId);
+  }
+}
+
+/**
+ * 删除当前打开的地图：清掉发布产物（瓦片/清单）与渲染工作目录，不可恢复。
+ * 删完 refreshMaps 会自动退回列表第一张；最后一张也删掉时把视图停在一个明确的错误态。
+ */
+async function deleteActiveMap(): Promise<void> {
+  const map = maps.value.find((m) => m.id === activeMapId.value);
+  if (!map || deletingMap.value) return;
+  if (!window.confirm(`删除地图「${map.name}」？渲染产物会一并清掉，不可恢复。`)) {
+    return;
+  }
+  deletingMap.value = true;
+  try {
+    await deleteMap(map.id);
+    forgetNewMap(map.id);
+    await refreshMaps();
+    if (!maps.value.some((m) => m.id === activeMapId.value) && !maps.value.length) {
+      // 最后一张也删了：没有可退回的地图，收掉场景给出明确提示
+      tileManager?.dispose();
+      tileManager = null;
+      manifest.value = null;
+      activeMapId.value = "";
+      status.value = "error";
+      errorMessage.value = "没有可用地图（最后一张已删除），可从「上传地图」重新渲染一张";
+    }
+  } catch (e) {
+    window.alert(e instanceof Error ? e.message : String(e));
+  } finally {
+    deletingMap.value = false;
   }
 }
 
@@ -489,6 +642,16 @@ onUnmounted(() => {
         <option v-for="m in maps" :key="m.id" :value="m.id">{{ m.name }}</option>
         <option v-if="!maps.length" disabled>{{ status === "loading" ? "加载中…" : "无地图" }}</option>
       </select>
+      <!-- 删除当前地图：清掉发布产物，确认后执行；删完自动退回列表第一张 -->
+      <button
+        v-if="activeMapId"
+        class="icon-btn danger"
+        :disabled="deletingMap"
+        :title="deletingMap ? '删除中…' : `删除地图「${maps.find((m) => m.id === activeMapId)?.name ?? ''}」`"
+        @click="deleteActiveMap"
+      >
+        🗑
+      </button>
       <!-- 后台渲染刚发布的地图：点一下直接切过去（列表本身也已自动刷新） -->
       <button
         v-if="newMaps.length"
@@ -746,6 +909,17 @@ body,
 .icon-btn.active {
   color: #fff;
   background: rgba(255, 255, 255, 0.1);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 删除当前地图：危险操作，hover 用红色而不是常规高亮 */
+.icon-btn.danger:hover:not(:disabled) {
+  color: #ff9f9f;
+  background: rgba(240, 110, 110, 0.16);
 }
 
 /* 设置面板 */

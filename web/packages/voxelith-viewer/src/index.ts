@@ -41,7 +41,12 @@ export {
 } from "./tiles/GlbTileLoader.js";
 export { FloatingOrigin } from "./engine/FloatingOrigin.js";
 export { FreeFlightControls, type FreeFlightOptions } from "./controls/FreeFlightControls.js";
-export { FirstPersonControls, type FirstPersonOptions } from "./controls/FirstPersonControls.js";
+export {
+  FirstPersonControls,
+  type FirstPersonOptions,
+  type TerrainMedium,
+  type TerrainProbe,
+} from "./controls/FirstPersonControls.js";
 export { TiltOrbitControls, type TiltOrbitOptions } from "./controls/TiltOrbitControls.js";
 export type { CameraControls, CameraMode, LookOptions } from "./controls/CameraControls.js";
 export { loadManifest } from "./manifest/loadManifest.js";

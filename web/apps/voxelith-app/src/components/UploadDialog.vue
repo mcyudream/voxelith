@@ -254,7 +254,10 @@ async function submitArchive(): Promise<void> {
     );
     await selectUpload(upload);
   } catch (e) {
-    error.value = message(e);
+    // 连不上后端（服务没起 / 代理打空）与「服务端拒绝参数」要分开说，否则只会看到 HTTP 500
+    error.value = api.isTransientError(e)
+      ? "连不上渲染服务（后端可能没启动，或刚重启过）。确认服务在跑之后重新点一次即可，所选文件不会丢。"
+      : message(e);
   } finally {
     busy.value = false;
     uploadRatio.value = 0;

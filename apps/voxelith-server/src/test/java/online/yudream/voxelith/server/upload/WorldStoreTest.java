@@ -14,6 +14,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -142,6 +144,24 @@ class WorldStoreTest {
     }
 
     @Test
+    void unpacksArchiveWithGbkEntryNames() throws IOException {
+        // 中文 Windows 资源管理器（及本机 libarchive）打的包按 ANSI 码页（GBK）写条目名且不带
+        // UTF-8 标志位：按 UTF-8 强解会在第一个中文条目抛 malformed input（网页端表现为
+        // 400「Input length = 1」），中文命名的存档一个都传不上来——解包必须能退回 GBK
+        byte[] archive = zip(Map.of(
+                "中文存档/level.dat", levelDat("1.20.4", DATA_VERSION_1_20_4, "打包的世界"),
+                "中文存档/region/r.0.0.mca", new byte[]{0, 0, 0, 0}), Charset.forName("GBK"));
+
+        WorldUpload upload = store(tempDir).registerUpload(new ByteArrayInputStream(archive), "中文存档.zip", null);
+
+        assertThat(upload.source()).isEqualTo(WorldUpload.SOURCE_ARCHIVE);
+        Path worldDir = Path.of(upload.worldDir());
+        assertThat(worldDir.getFileName().toString()).isEqualTo("中文存档");
+        assertThat(Files.isRegularFile(worldDir.resolve("level.dat"))).isTrue();
+        assertThat(worldDir.resolve("region")).isDirectory();
+    }
+
+    @Test
     void archiveWithOnlyLevelDatFallsBackToLocalWorld() throws IOException {
         // 包内只有 level.dat（没带 region）：解包结果没有渲染价值，应该去本机认领真正的存档目录
         Path world = writeWorld(tempDir.resolve("世界F"), levelDat("1.20.4", DATA_VERSION_1_20_4, "世界F"));
@@ -156,6 +176,28 @@ class WorldStoreTest {
         try (var walk = Files.walk(tempDir.resolve("uploads"))) {
             assertThat(walk.filter(Files::isDirectory).map(p -> p.getFileName().toString()))
                     .doesNotContain("world");
+        }
+    }
+
+    @Test
+    void cleansUpPartialDirectoryWhenUnzipFails() throws IOException {
+        // 损坏 zip：解包在中途炸掉时，半成品目录不会出现在列表里（没描述文件），
+        // 却会挤占 id 与磁盘——必须清干净，不然同名包的重传永远落到 -1 后缀上
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("存档/level.dat", levelDat("1.20.4", DATA_VERSION_1_20_4, "打包的世界"));
+        entries.put("存档/region/r.0.0.mca", new byte[8192]);
+        byte[] archive = zip(entries);
+        // level.dat 条目数据从 local header（30 字节 + 条目名）之后开始，第 60 字节必在其中；
+        // gzip 数据被翻转会让 CRC 校验失败 → 解包抛 IOException
+        archive[60] ^= 0xFF;
+
+        assertThatThrownBy(() ->
+                store(tempDir).registerUpload(new ByteArrayInputStream(archive), "残档.zip", null))
+                .isInstanceOf(RuntimeException.class);
+        Path uploads = tempDir.resolve("uploads");
+        Files.createDirectories(uploads);
+        try (var walk = Files.walk(uploads)) {
+            assertThat(walk.filter(p -> !p.equals(uploads)).toList()).isEmpty();
         }
     }
 
@@ -227,8 +269,13 @@ class WorldStoreTest {
     }
 
     private static byte[] zip(Map<String, byte[]> entries) throws IOException {
+        return zip(entries, StandardCharsets.UTF_8);
+    }
+
+    /** entryNameCharset：资源管理器（GBK，不带 UTF-8 标志位）与新式工具（UTF-8）打出的包都要能解。 */
+    private static byte[] zip(Map<String, byte[]> entries, Charset entryNameCharset) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(buffer)) {
+        try (ZipOutputStream zip = new ZipOutputStream(buffer, entryNameCharset)) {
             for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 zip.write(entry.getValue());

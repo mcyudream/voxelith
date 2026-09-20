@@ -208,6 +208,13 @@ export function deleteUpload(id: string): Promise<{ removed: boolean }> {
   });
 }
 
+/** 删除一张已发布地图（发布目录与渲染工作目录一并清掉，不可恢复）。 */
+export function deleteMap(mapId: string): Promise<{ removed: boolean }> {
+  return request<{ removed: boolean }>(`/api/maps/${encodeURIComponent(mapId)}`, {
+    method: "DELETE",
+  });
+}
+
 export function startPreview(id: string, dimension: string): Promise<PreviewStatus> {
   return request<PreviewStatus>(
     `/api/uploads/${encodeURIComponent(id)}/preview?dimension=${encodeURIComponent(dimension)}`,

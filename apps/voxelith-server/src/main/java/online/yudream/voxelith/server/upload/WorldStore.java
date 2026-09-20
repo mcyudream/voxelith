@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PushbackInputStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -248,6 +250,8 @@ public class WorldStore {
             }
             extractedLevelDat = root.map(dir -> dir.resolve(LEVEL_DAT)).orElse(null);
         } catch (IOException e) {
+            // 半成品目录留着不会出现在列表里（没有描述文件），却会挤占 id 与磁盘——解包失败就清干净
+            deleteRecursively(target);
             throw new UncheckedIOException("解包存档失败: " + fileName, e);
         }
         if (extractedLevelDat == null) {
@@ -270,10 +274,20 @@ public class WorldStore {
      * 解包：拒绝目录穿越条目（zip slip），跳过 macOS 元数据目录。
      * 单条上限按 {@code ZipEntry.getSize()} 不做限制——存档里的区块本就可能很大，
      * 真正的保护是「只解到 upload-dir 之内」。
+     *
+     * <p>zip 条目名的编码没有统一标准：中文 Windows 资源管理器（以及本机 libarchive/bsdtar）
+     * 按 ANSI 码页（GBK）写名字且不带 UTF-8 标志位，新式工具写 UTF-8 并置标志位。
+     * JDK 的 ZipInputStream 对<b>带 UTF-8 标志位</b>的条目一律按 UTF-8 解（与构造 charset
+     * 无关），<b>不带标志位</b>的条目才用构造 charset——因此把构造 charset 配成系统
+     * ANSI 码页（中文 Windows = GBK）：Explorer 的名字按 GBK 解对，UTF-8 的名字由标志位
+     * 兜住。若按默认 UTF-8 构造，GBK 名字会在第一个中文条目就抛 malformed input
+     * （网页上传表现为 400「Input length = 1」，整个存档传不进来）。</p>
      */
     private static void unzip(InputStream archive, Path target) throws IOException {
         Path root = target.toAbsolutePath().normalize();
-        try (ZipInputStream zip = new ZipInputStream(archive)) {
+        Charset ansiNames = Charset.forName(
+                System.getProperty("sun.jnu.encoding", "GBK"), StandardCharsets.UTF_8);
+        try (ZipInputStream zip = new ZipInputStream(archive, ansiNames)) {
             ZipEntry entry;
             byte[] buffer = new byte[1 << 16];
             while ((entry = zip.getNextEntry()) != null) {

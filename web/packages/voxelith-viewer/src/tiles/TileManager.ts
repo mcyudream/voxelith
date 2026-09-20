@@ -8,6 +8,14 @@
 import * as THREE from "three";
 import { tileWorldOrigin, type MapManifest, type ManifestTile } from "@yudream/voxelith-core";
 import { configureHiresAtlas, disposeTileGroup, GlbTileLoader } from "./GlbTileLoader.js";
+import { buildTileCollisionProxy, type TileCollisionProxies } from "./TileCollisionProxy.js";
+
+/**
+ * 碰撞兜底允许用到的最粗 LOD 层级：LOD 柱顶取的是 2^level 方块内的**最高**表面，
+ * 层级越粗误差越大（实测 L5 能比真实地面高 17 格）。取前 4 层（footprint ≤ 8 方块）
+ * 既能在 hires 还没到时给出可用地面，又不会把人托到半空。
+ */
+const COLLISION_MAX_FALLBACK_LEVEL = 3;
 
 export interface TileManagerOptions {
   scene: THREE.Scene;
@@ -123,6 +131,11 @@ export class TileManager {
   private readonly traversalStack: ManifestTile[] = [];
   /** 排障隔离：限制可见层级。默认 all。 */
   private layerFilter: "all" | "hires" | "lod" = "all";
+  /**
+   * 瓦片组 → 碰撞代理（懒建）。第一人称的射线只打代理：密集瓦片整片求交要几毫秒，
+   * 代理按区域切成子网格后每条射线只扫穿过的 1~2 块。随瓦片组一起被 GC 回收。
+   */
+  private readonly collisionProxies = new WeakMap<THREE.Object3D, TileCollisionProxies>();
 
   constructor(options: TileManagerOptions) {
     this.scene = options.scene;
@@ -283,6 +296,71 @@ export class TileManager {
     this.worldOffset.copy(offset);
   }
 
+  /**
+   * 覆盖该渲染空间列的已加载瓦片组（level 0 = hires），没有则 null。
+   *
+   * 第一人称的脚下地表/碰撞探测要用它：LOD 层级的柱顶取的是 2^L 方块内的**最高**表面，
+   * 拿粗层当地面会把人托在半空（大范围平台比真实地面高几十格）。所以碰撞只认 hires。
+   */
+  tileGroupAt(x: number, z: number, level = 0): THREE.Object3D | null {
+    if (level < 0 || level > this.topLevel) {
+      return null;
+    }
+    const size = this.manifest.settings.hiresTileSize * 2 ** level;
+    const tileX = Math.floor((x + this.worldOffset.x) / size);
+    const tileZ = Math.floor((z + this.worldOffset.z) / size);
+    return this.live.get(`${level}:${tileX}:${tileZ}`)?.group ?? null;
+  }
+
+  /**
+   * 该列可用于碰撞的瓦片：hires（level 0）优先，hires 还没流式到位时退到**已加载的最细
+   * LOD**（不超过 {@link COLLISION_MAX_FALLBACK_LEVEL}，避免粗层柱顶把人托到半空）。
+   */
+  private collisionTileAt(x: number, z: number): THREE.Object3D | null {
+    const maxLevel = Math.min(COLLISION_MAX_FALLBACK_LEVEL, this.topLevel);
+    for (let level = 0; level <= maxLevel; level++) {
+      const tile = this.tileGroupAt(x, z, level);
+      if (tile) {
+        return tile;
+      }
+    }
+    return null;
+  }
+
+  /** 瓦片的碰撞代理（实体 + 水面），懒建一次后缓存在瓦片组上。 */
+  private proxiesFor(tile: THREE.Object3D): TileCollisionProxies {
+    const cached = this.collisionProxies.get(tile);
+    if (cached) {
+      return cached;
+    }
+    const proxies = buildTileCollisionProxy(tile);
+    // `visible=false` 的子节点：不参与渲染，但会跟着瓦片一起被浮点原点重定基平移
+    tile.add(proxies.solid);
+    tile.add(proxies.water);
+    proxies.solid.updateMatrixWorld(true);
+    proxies.water.updateMatrixWorld(true);
+    this.collisionProxies.set(tile, proxies);
+    return proxies;
+  }
+
+  /**
+   * 该渲染空间列的**实体**碰撞代理（地面 / 墙 / 台阶）：第一人称的下落、贴墙、撞头射线都打它。
+   * 已剔除植物（45° 交叉面片）与水面；hires 未加载时用最细的可用 LOD 兜底。
+   */
+  solidProxyAt(x: number, z: number): THREE.Object3D | null {
+    const tile = this.collisionTileAt(x, z);
+    return tile ? this.proxiesFor(tile).solid : null;
+  }
+
+  /**
+   * 该渲染空间列的**水面**碰撞代理：游泳 / 沉水 / 判断人在水里用。
+   * 只有 hires 瓦片带水面 primitive（LOD 是高度场，水面颜色烘进色图），因此 LOD 兜底时为空。
+   */
+  waterProxyAt(x: number, z: number): THREE.Object3D | null {
+    const tile = this.collisionTileAt(x, z);
+    return tile ? this.proxiesFor(tile).water : null;
+  }
+
   get detailDistanceBlocks(): number {
     return this.detailDistance;
   }
@@ -408,6 +486,9 @@ export class TileManager {
       );
       group.matrixAutoUpdate = false;
       group.updateMatrix();
+      // 射线求交（第一人称脚下地表）直接读 matrixWorld，而世界矩阵平时只在渲染前刷新：
+      // 这里就地把这一组算好，避免刚到的瓦片在下一帧用旧矩阵（原点）参与求交。
+      group.updateMatrixWorld(true);
       if (tile.level > 0) {
         // LOD 背景在深度上让位：细层就位后与祖先重叠区域由细层绘制
         group.traverse((node) => {
