@@ -110,20 +110,91 @@ final class S3Signer {
 
     static List<String> parseListKeys(String xml) {
         List<String> keys = new ArrayList<>();
-        int from = 0;
-        while (true) {
-            int start = xml.indexOf("<Key>", from);
-            if (start < 0) {
-                break;
-            }
-            int end = xml.indexOf("</Key>", start);
-            if (end < 0) {
-                break;
-            }
-            keys.add(xml.substring(start + 5, end));
-            from = end + 6;
+        for (online.yudream.voxelith.maps.domain.ObjectStore.ObjectMeta meta : parseListEntries(xml)) {
+            keys.add(meta.key());
         }
         return keys;
+    }
+
+    /**
+     * ListObjectsV2 的 {@code <Contents>} 条目：Key / LastModified / ETag / Size。
+     *
+     * <p>ETag 是变更检测的主判据（S3 单段上传的 ETag 就是内容 MD5）。没有 SDK 时
+     * 手写一个只认这几个字段的扫描器比引入 XML 依赖更省事——S3 的响应结构是稳定的。</p>
+     */
+    static List<online.yudream.voxelith.maps.domain.ObjectStore.ObjectMeta> parseListEntries(String xml) {
+        List<online.yudream.voxelith.maps.domain.ObjectStore.ObjectMeta> entries = new ArrayList<>();
+        int from = 0;
+        while (true) {
+            int contents = xml.indexOf("<Contents>", from);
+            if (contents < 0) {
+                break;
+            }
+            int contentsEnd = xml.indexOf("</Contents>", contents);
+            if (contentsEnd < 0) {
+                break;
+            }
+            String block = xml.substring(contents, contentsEnd);
+            String key = tag(block, "Key");
+            if (key != null) {
+                entries.add(new online.yudream.voxelith.maps.domain.ObjectStore.ObjectMeta(
+                        key,
+                        parseLong(tag(block, "Size"), -1),
+                        parseInstant(tag(block, "LastModified")),
+                        stripQuotes(tag(block, "ETag"))));
+            }
+            from = contentsEnd + 11;
+        }
+        return entries;
+    }
+
+    private static String tag(String block, String name) {
+        int start = block.indexOf("<" + name + ">");
+        if (start < 0) {
+            return null;
+        }
+        int end = block.indexOf("</" + name + ">", start);
+        if (end < 0) {
+            return null;
+        }
+        return block.substring(start + name.length() + 2, end);
+    }
+
+    private static long parseLong(String value, long fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static long parseInstant(String value) {
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            return Instant.parse(value.trim()).toEpochMilli();
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
+    private static String stripQuotes(String value) {
+        if (value == null) {
+            return "";
+        }
+        // S3 的 ETag 形如 "abc..."：XML 里既可以写裸引号，也可能被转义成 &quot;
+        String trimmed = value.trim()
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">");
+        return trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() >= 2
+                ? trimmed.substring(1, trimmed.length() - 1)
+                : trimmed;
     }
 
     private static byte[] signingKey(String secret, String dateStamp, String region) {

@@ -82,6 +82,23 @@ public final class FileObjectStore implements ObjectStore {
         return keys;
     }
 
+    /** 本地文件的版本标识 = 大小-修改时间：内容变了（几乎必然）至少变一个。 */
+    @Override
+    public List<ObjectMeta> listMeta(String prefix) {
+        List<ObjectMeta> metas = new ArrayList<>();
+        for (String key : list(prefix)) {
+            Path file = resolve(key);
+            try {
+                long size = Files.size(file);
+                long modified = Files.getLastModifiedTime(file).toMillis();
+                metas.add(new ObjectMeta(key, size, modified, size + "-" + modified));
+            } catch (IOException e) {
+                throw new UncheckedIOException("读对象元数据失败: " + file, e);
+            }
+        }
+        return metas;
+    }
+
     private Path resolve(String key) {
         Path rootAbs = root.toAbsolutePath().normalize();
         Path file = rootAbs.resolve(key).normalize();

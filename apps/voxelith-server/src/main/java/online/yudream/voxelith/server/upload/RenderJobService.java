@@ -126,6 +126,7 @@ public class RenderJobService {
     private final int defaultMinY;
     private final int defaultMaxLevel;
     private final boolean defaultLodAtlas;
+    private final boolean defaultMeshopt;
     /** 单次渲染的非空区块上限；0 = 按渲染进程的堆自动估算（见 {@link #effectiveMaxChunks()}）。 */
     private final int configuredMaxChunks;
     /** 每批区块数；0 = 不分遍（单遍渲染，内存与窗口大小线性相关）。 */
@@ -141,6 +142,7 @@ public class RenderJobService {
 
     public RenderJobService(WorldStore store, RenderInputs inputs, Path publishDir,
                             int defaultMinY, int defaultMaxLevel, boolean defaultLodAtlas,
+                            boolean defaultMeshopt,
                             int maxChunks, int batchChunks, long renderHeapBytes) {
         this.store = store;
         this.inputs = inputs;
@@ -148,6 +150,7 @@ public class RenderJobService {
         this.defaultMinY = defaultMinY;
         this.defaultMaxLevel = defaultMaxLevel;
         this.defaultLodAtlas = defaultLodAtlas;
+        this.defaultMeshopt = defaultMeshopt;
         this.configuredMaxChunks = Math.max(0, maxChunks);
         this.configuredBatchChunks = Math.max(0, batchChunks);
         this.renderHeapBytes = Math.max(0, renderHeapBytes);
@@ -316,7 +319,8 @@ public class RenderJobService {
                 inputs.workerClasspath().isEmpty(),
                 inputs.workerClasspath(),
                 hardMaxChunks(),
-                configuredBatchChunks);
+                configuredBatchChunks,
+                request.meshopt() == null ? defaultMeshopt : request.meshopt());
 
         Job job = new Job();
         job.upload = upload;

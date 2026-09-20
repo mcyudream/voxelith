@@ -4,6 +4,7 @@ import online.yudream.voxelith.tile.application.ImageCodec;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -24,5 +25,22 @@ public final class PngImageCodec implements ImageCodec {
             throw new UncheckedIOException("PNG 编码失败", e);
         }
         return out.toByteArray();
+    }
+
+    @Override
+    public int[] decodePng(byte[] png) {
+        try {
+            BufferedImage image = ImageIO.read(new ByteArrayInputStream(png));
+            if (image == null) {
+                throw new IllegalArgumentException("不是可识别的 PNG（" + png.length + " 字节）");
+            }
+            int width = image.getWidth();
+            int height = image.getHeight();
+            int[] argb = new int[width * height];
+            image.getRGB(0, 0, width, height, argb, 0, width);
+            return argb;
+        } catch (IOException e) {
+            throw new UncheckedIOException("PNG 解码失败", e);
+        }
     }
 }

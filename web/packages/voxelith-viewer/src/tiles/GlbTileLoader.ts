@@ -17,6 +17,8 @@
  */
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
+import { YSliceUniforms } from "../engine/YSlice.js";
 
 /**
  * 全局烘焙光照参数。所有瓦片材质共享同一组 uniform 引用，
@@ -217,6 +219,9 @@ export class GlbTileLoader {
   private readonly lodAtlases: ReadonlyMap<number, THREE.Texture>;
 
   constructor(options: GlbTileLoaderOptions = {}) {
+    // EXT_meshopt_compression 瓦片（EncodeOptions.meshopt）靠自带 WASM 解码器还原几何。
+    // 不挂解码器时 GLTFLoader 会因 extensionsRequired 直接抛「setMeshoptDecoder must be called」。
+    this.loader.setMeshoptDecoder(MeshoptDecoder);
     this.sharedAtlas = options.sharedAtlas;
     if (this.sharedAtlas) {
       configureHiresAtlas(this.sharedAtlas);
@@ -301,22 +306,30 @@ export class GlbTileLoader {
     material.onBeforeCompile = (shader) => {
       // 共享引用：LightingUniforms 的 value 修改自动同步到所有已编译材质
       Object.assign(shader.uniforms, LightingUniforms);
+      // Y 轴切片：同样共享引用。判别代码常驻（uniform 开关），切片开关不触发重编译
+      Object.assign(shader.uniforms, YSliceUniforms);
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
           `#include <common>
-${hasBakedLight ? "attribute vec3 _light;\nvarying vec3 vBakedLight;" : ""}`,
+${hasBakedLight ? "attribute vec3 _light;\nvarying vec3 vBakedLight;" : ""}
+varying float vSliceY;`,
         )
         .replace(
           "#include <begin_vertex>",
           `#include <begin_vertex>
-${hasBakedLight ? "vBakedLight = _light;" : ""}`,
+${hasBakedLight ? "vBakedLight = _light;" : ""}
+vSliceY = (modelMatrix * vec4(transformed, 1.0)).y;`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
           `#include <common>
 ${hasBakedLight ? "varying vec3 vBakedLight;" : ""}
+varying float vSliceY;
+uniform float ySliceEnabled;
+uniform float ySliceMin;
+uniform float ySliceMax;
 uniform float skyLightStrength;
 uniform float blockLightStrength;
 uniform float aoStrength;
@@ -325,6 +338,9 @@ uniform float ambientFloor;`,
         .replace(
           "#include <color_fragment>",
           `#include <color_fragment>
+if (ySliceEnabled > 0.5 && (vSliceY < ySliceMin || vSliceY > ySliceMax)) {
+  discard;
+}
 ${
   hasBakedLight
     ? `{

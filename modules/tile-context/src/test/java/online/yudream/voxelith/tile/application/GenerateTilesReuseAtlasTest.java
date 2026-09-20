@@ -58,8 +58,10 @@ class GenerateTilesReuseAtlasTest {
         assertEquals(16, outcome.atlasSize());
         assertTrue(Files.isRegularFile(outputDir.resolve("tiles/hires/0/0.glb")));
         assertTrue(Files.isRegularFile(outcome.atlasFile()));
-        assertTrue(Files.notExists(outputDir.resolve("atlas-layout.json")),
-                "复用图集不得重写 atlas-layout.json");
+        // 复用路径也要落一份布局：增量扩图集会改布局（追加新贴图），产物目录与已发布目录
+        // 的 layout 必须一起前进，否则续跑/发布拿老布局就会把新格子当成不存在
+        assertTrue(Files.isRegularFile(outputDir.resolve("atlas-layout.json")),
+                "复用路径也应写出图集布局");
     }
 
     @Test

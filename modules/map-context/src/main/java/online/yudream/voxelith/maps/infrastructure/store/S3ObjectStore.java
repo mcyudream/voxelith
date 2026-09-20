@@ -80,13 +80,23 @@ public final class S3ObjectStore implements ObjectStore {
 
     @Override
     public List<String> list(String prefix) {
+        return S3Signer.parseListKeys(listXml(prefix));
+    }
+
+    /** ETag/大小/修改时间：S3 侧没有 inotify，变更检测只能靠这些元数据比对。 */
+    @Override
+    public List<ObjectMeta> listMeta(String prefix) {
+        return S3Signer.parseListEntries(listXml(prefix));
+    }
+
+    private String listXml(String prefix) {
         String path = "/" + bucket + "?list-type=2&prefix="
                 + java.net.URLEncoder.encode(prefix, StandardCharsets.UTF_8).replace("+", "%20");
         HttpResult result = request("GET", path, new byte[0], null, true);
         if (result.status() >= 400) {
             throw fail("LIST", prefix, result);
         }
-        return S3Signer.parseListKeys(result.bodyAsString());
+        return result.bodyAsString();
     }
 
     private String objectPath(String key) {

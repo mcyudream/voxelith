@@ -11,19 +11,28 @@ package online.yudream.voxelith.tile.domain.tile;
  * 引用提供（前端挂一张共享纹理）。hires 图集约 1.7MB，逐瓦片内嵌等于每片 glb 都背一份副本，
  * 上千片就是几个 GB 的重复下载；而前端本来就会把内嵌副本换成共享纹理。材质仍按纹理瓦片输出
  * （alphaMode MASK + alphaCutoff），所以树叶等裁剪面不受影响。</p>
+ *
+ * <p>{@code meshopt} 启用 {@code EXT_meshopt_compression} 熵编码：POSITION/NORMAL/TEXCOORD_0
+ * 与索引走 meshoptimizer 位流（纯 Java 编码器，见 tile-context infrastructure.meshopt），
+ * 解码由 three.js 自带的 meshopt 解码器完成。与 {@code quantize} 可叠加：
+ * 量化先缩小元素宽度，熵编码再压一遍冗余，两者叠加可把几何压到原始 float32 的 1/4 上下。</p>
  */
-public record EncodeOptions(boolean quantize, boolean linearFilter, boolean embedImage) {
+public record EncodeOptions(boolean quantize, boolean linearFilter, boolean embedImage, boolean meshopt) {
+
+    public EncodeOptions(boolean quantize, boolean linearFilter, boolean embedImage) {
+        this(quantize, linearFilter, embedImage, false);
+    }
 
     public EncodeOptions(boolean quantize) {
-        this(quantize, false, true);
+        this(quantize, false, true, false);
     }
 
     public static EncodeOptions uncompressed() {
-        return new EncodeOptions(false, false, true);
+        return new EncodeOptions(false, false, true, false);
     }
 
     public static EncodeOptions quantized() {
-        return new EncodeOptions(true, false, true);
+        return new EncodeOptions(true, false, true, false);
     }
 
     /**
@@ -31,11 +40,24 @@ public record EncodeOptions(boolean quantize, boolean linearFilter, boolean embe
      * 仍内嵌 PNG——增量重跑时逐瓦片色图就是这么嵌的；全量的分层图集页用 {@link #sharedAtlas()}。
      */
     public static EncodeOptions lodColormap() {
-        return new EncodeOptions(false, true, true);
+        return new EncodeOptions(false, true, true, false);
     }
 
     /** hires 共享图集：UV 与材质照常，但不内嵌 PNG（贴图由清单 atlas 引用）。 */
     public static EncodeOptions sharedAtlas() {
-        return new EncodeOptions(false, false, false);
+        return new EncodeOptions(false, false, false, false);
+    }
+
+    /**
+     * 生产档：量化 + meshopt 熵编码 + 不内嵌图集。
+     * glb 只留量化后的顶点位流与索引位流，贴图由清单的共享图集提供。
+     */
+    public static EncodeOptions compressed() {
+        return new EncodeOptions(true, false, false, true);
+    }
+
+    /** 在现有选项上开关 meshopt 熵编码。 */
+    public EncodeOptions withMeshopt(boolean enabled) {
+        return new EncodeOptions(quantize, linearFilter, embedImage, enabled);
     }
 }

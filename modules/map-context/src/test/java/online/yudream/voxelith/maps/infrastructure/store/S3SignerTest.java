@@ -55,6 +55,46 @@ class S3SignerTest {
         assertThat(S3Signer.parseListKeys("<ListBucketResult/>")).isEqualTo(List.of());
     }
 
+    /**
+     * S3 侧 Watch 等价物的数据来源：ListObjectsV2 的 ETag/大小/修改时间。
+     * 轮询比对全靠这几个字段，解析错一个字段就会「永远检测不到变更」或「每次都当变更」。
+     */
+    @Test
+    void parseListEntriesExtractsMetadata() {
+        String xml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <ListBucketResult>
+                  <Name>voxelith</Name>
+                  <Contents>
+                    <Key>region/r.0.0.mca</Key>
+                    <LastModified>2026-09-20T03:14:15.000Z</LastModified>
+                    <ETag>&quot;5d41402abc4b2a76b9719d911017c592&quot;</ETag>
+                    <Size>8192</Size>
+                  </Contents>
+                  <Contents>
+                    <Key>region/r.-1.2.mca</Key>
+                    <LastModified>2026-09-20T04:00:00.000Z</LastModified>
+                    <ETag>"d41d8cd98f00b204e9800998ecf8427e"</ETag>
+                    <Size>0</Size>
+                  </Contents>
+                </ListBucketResult>
+                """;
+
+        var entries = S3Signer.parseListEntries(xml);
+        assertThat(entries).hasSize(2);
+        assertThat(entries.get(0).key()).isEqualTo("region/r.0.0.mca");
+        assertThat(entries.get(0).size()).isEqualTo(8192);
+        assertThat(entries.get(0).version()).isEqualTo("5d41402abc4b2a76b9719d911017c592");
+        assertThat(entries.get(0).lastModifiedEpochMs())
+                .isEqualTo(Instant.parse("2026-09-20T03:14:15.000Z").toEpochMilli());
+        assertThat(entries.get(1).key()).isEqualTo("region/r.-1.2.mca");
+        assertThat(entries.get(1).size()).isZero();
+
+        assertThat(S3Signer.parseListEntries("<ListBucketResult/>")).isEmpty();
+        assertThat(S3Signer.parseListEntries("<Contents><Key>k</Key></Contents>").get(0).version())
+                .isEmpty();
+    }
+
     @Test
     void canonicalQuerySortsAndKeepsEmptyValues() {
         URI uri = URI.create("http://127.0.0.1:9000/maps?prefix=demo/&list-type=2");

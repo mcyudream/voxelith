@@ -5,6 +5,9 @@ import online.yudream.voxelith.orchestration.domain.PipelineRun;
 import online.yudream.voxelith.orchestration.domain.PipelineStage;
 import online.yudream.voxelith.orchestration.domain.PipelineStageExecutor;
 import online.yudream.voxelith.orchestration.domain.ShardedStageExecutor;
+import online.yudream.voxelith.orchestration.domain.ShardJob;
+import online.yudream.voxelith.orchestration.domain.ShardJobState;
+import online.yudream.voxelith.orchestration.domain.ShardQueuePort;
 import online.yudream.voxelith.orchestration.domain.StageState;
 import online.yudream.voxelith.orchestration.domain.StageStatus;
 
@@ -25,6 +28,10 @@ public class RunPipelineUseCase {
     private final PipelineCheckpointStore checkpoints;
     private final Map<PipelineStage, PipelineStageExecutor> executors;
     private final Map<PipelineStage, ShardedStageExecutor> shardedExecutors;
+    /** 可选：分片作业队列（null = 本地顺序执行）。 */
+    private final ShardQueuePort queue;
+    private final ShardWorkerPool workerPool;
+    private final int workers;
 
     public RunPipelineUseCase(PipelineCheckpointStore checkpoints,
                               Map<PipelineStage, PipelineStageExecutor> executors) {
@@ -34,9 +41,26 @@ public class RunPipelineUseCase {
     public RunPipelineUseCase(PipelineCheckpointStore checkpoints,
                               Map<PipelineStage, PipelineStageExecutor> executors,
                               Map<PipelineStage, ShardedStageExecutor> shardedExecutors) {
+        this(checkpoints, executors, shardedExecutors, null, 1);
+    }
+
+    /**
+     * @param queue   分片作业队列；null = 本地顺序执行
+     * @param workers 本地 worker 线程数（队列模式下 >1 才本地并行；远端 worker 另算）
+     */
+    public RunPipelineUseCase(PipelineCheckpointStore checkpoints,
+                              Map<PipelineStage, PipelineStageExecutor> executors,
+                              Map<PipelineStage, ShardedStageExecutor> shardedExecutors,
+                              ShardQueuePort queue, int workers) {
         this.checkpoints = checkpoints;
         this.executors = Map.copyOf(executors);
         this.shardedExecutors = Map.copyOf(shardedExecutors);
+        this.queue = queue;
+        this.workers = Math.max(1, workers);
+        this.workerPool = queue == null
+                ? null
+                : new ShardWorkerPool(queue, java.time.Duration.ofMinutes(30),
+                        java.time.Duration.ofMinutes(10));
     }
 
     public PipelineRun run(Path runDir, String runId, String mapId) {
@@ -95,6 +119,10 @@ public class RunPipelineUseCase {
         run = run.withStage(stage, state);
         checkpoints.save(runDir, run);
 
+        if (queue != null) {
+            return executeShardedViaQueue(runDir, run, stage, executor, shards);
+        }
+
         List<String> allArtifacts = new ArrayList<>();
         for (String shard : shards) {
             StageState current = run.stage(stage);
@@ -107,6 +135,63 @@ public class RunPipelineUseCase {
             run = run.withStage(stage, run.stage(stage).withShardDone(shard, shardArtifacts));
             checkpoints.save(runDir, run);
             allArtifacts.addAll(shardArtifacts);
+        }
+        return run.withStage(stage, run.stage(stage)
+                .done(System.currentTimeMillis(), allArtifacts));
+    }
+
+    /**
+     * 队列模式：入队 → 本地 worker 与远端 worker 一起抢 → 按作业回填分片检查点。
+     *
+     * <p>已完成且产物健在的分片不重复入队；其余入队（enqueue 幂等：DONE 的不重置、
+     * 别人正在跑的不抢）。产物缺失的分片会被重新执行——这正是「检查点说有、盘上没有」
+     * 场景需要的语义。</p>
+     */
+    private PipelineRun executeShardedViaQueue(Path runDir, PipelineRun run, PipelineStage stage,
+                                               ShardedStageExecutor executor, List<String> shards)
+            throws Exception {
+        StageState current = run.stage(stage);
+        Map<String, ShardJob> queued = new java.util.HashMap<>();
+        for (ShardJob job : queue.jobs(stage)) {
+            queued.put(job.shard(), job);
+        }
+        List<String> toEnqueue = new ArrayList<>();
+        for (String shard : shards) {
+            boolean checkpointOk = current.shardDone(shard)
+                    && artifactsIntact(runDir, current.completedShards().get(shard));
+            // 队列里的 DONE 是「别的 worker 已经跑过」的凭据：产物还在就不重跑，
+            // 产物没了（被清理/磁盘丢失）才回收重跑
+            ShardJob job = queued.get(shard);
+            boolean queueOk = job != null && job.state() == ShardJobState.DONE
+                    && artifactsIntact(runDir, job.artifacts());
+            if (checkpointOk || queueOk) {
+                continue;
+            }
+            toEnqueue.add(shard);
+        }
+        if (!toEnqueue.isEmpty()) {
+            // 队列里的 DONE 记录会挡住重跑（产物被删/被清），先丢弃记录再入队
+            for (String shard : toEnqueue) {
+                queue.reset(stage, shard);
+            }
+            queue.enqueue(stage, toEnqueue);
+            workerPool.drainStage(stage, "local", workers,
+                    (s, shard) -> executor.executeShard(stage, shard, runDir));
+        }
+
+        List<String> allArtifacts = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        for (ShardJob job : queue.jobs(stage)) {
+            if (job.state() == ShardJobState.DONE) {
+                run = run.withStage(stage, run.stage(stage).withShardDone(job.shard(), job.artifacts()));
+                allArtifacts.addAll(job.artifacts());
+            } else if (job.state() == ShardJobState.FAILED) {
+                failures.add(job.shard() + ": " + job.error());
+            }
+        }
+        checkpoints.save(runDir, run);
+        if (!failures.isEmpty()) {
+            throw new IllegalStateException("分片失败: " + failures);
         }
         return run.withStage(stage, run.stage(stage)
                 .done(System.currentTimeMillis(), allArtifacts));

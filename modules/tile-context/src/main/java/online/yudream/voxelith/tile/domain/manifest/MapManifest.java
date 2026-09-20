@@ -26,8 +26,19 @@ public record MapManifest(int formatVersion, String mapId, String name, String v
     public record Settings(int hiresTileSize, int lodCount) {
     }
 
-    /** @param url 相对地图根的图集地址 @param size 图集边长（像素） @param textureCount 入集贴图数 */
-    public record AtlasRef(String url, int size, int textureCount) {
+    /**
+     * @param url          相对地图根的图集地址
+     * @param size         图集宽（像素）
+     * @param textureCount 入集贴图数
+     * @param height       图集高（像素）。等于 size 表示正方形（全量打包）；
+     *                     增量扩图集向下加行后 height 会大于 size
+     */
+    public record AtlasRef(String url, int size, int textureCount, int height) {
+
+        /** 兼容构造：正方形图集（全量打包与老清单）。 */
+        public AtlasRef(String url, int size, int textureCount) {
+            this(url, size, textureCount, size);
+        }
     }
 
     /**

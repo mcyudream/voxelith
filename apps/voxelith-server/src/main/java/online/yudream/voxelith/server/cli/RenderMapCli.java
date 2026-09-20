@@ -173,7 +173,7 @@ public final class RenderMapCli {
             long tTile = System.currentTimeMillis();
             // 共享图集：瓦片只带 UV，不再每片内嵌 1.7MB 图集（前端挂清单 atlas 那张共享纹理）
             TileOutcome hires = tiles.generate(new TileCommand(meshes, options.workDir(),
-                    EncodeOptions.sharedAtlas()));
+                    tileEncodeOptions(options)));
             out.printf("tile 完成：hires 瓦片 %d，图集 %d² / %d 格，耗时 %.1fs%n",
                     hires.tiles().size(), hires.atlasSize(), hires.textureCount(),
                     (System.currentTimeMillis() - tTile) / 1000.0);
@@ -181,7 +181,7 @@ public final class RenderMapCli {
 
             GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                     TileContextBootstrap.openTextureColorSampler(catalog),
-                    TileContextBootstrap.openVertexColorTileExporter(),
+                    TileContextBootstrap.openVertexColorTileExporter(options.meshopt()),
                     lodImageCodec(options));
             HeightfieldStore store = new FileHeightfieldStore(
                     options.workDir().resolve("heightfield.bin"));
@@ -303,6 +303,17 @@ public final class RenderMapCli {
      */
     private static online.yudream.voxelith.tile.application.ImageCodec lodImageCodec(RenderMapOptions options) {
         return options.lodAtlas() ? TileContextBootstrap.openImageCodec() : null;
+    }
+
+    /**
+     * hires 瓦片编码选项：共享图集（不内嵌 PNG），并按 {@code meshopt} 开关决定是否走
+     * EXT_meshopt_compression。默认开启——量化 + 熵编码把瓦片几何压到未压缩的约 1/5，
+     * 前端 GLTFLoader 已挂 meshopt 解码器；关掉只是产物体积变大，不影响正确性。
+     */
+    private static EncodeOptions tileEncodeOptions(RenderMapOptions options) {
+        return options.meshopt()
+                ? EncodeOptions.sharedAtlas().withMeshopt(true)
+                : EncodeOptions.sharedAtlas();
     }
 
     /** 注入地图画后的网格表 + 统计。 */
@@ -577,7 +588,7 @@ public final class RenderMapCli {
 
         GenerateLodPyramidUseCase lod = new GenerateLodPyramidUseCase(
                 TileContextBootstrap.openTextureColorSampler(catalog),
-                TileContextBootstrap.openVertexColorTileExporter(),
+                TileContextBootstrap.openVertexColorTileExporter(options.meshopt()),
                 lodImageCodec(options));
         HeightfieldStore store = new FileHeightfieldStore(
                 options.workDir().resolve("heightfield.bin"));
@@ -609,7 +620,7 @@ public final class RenderMapCli {
                 }
             }
             TileOutcome hires = tiles.generate(new TileCommand(
-                    meshes, options.workDir(), EncodeOptions.sharedAtlas(), atlas));
+                    meshes, options.workDir(), tileEncodeOptions(options), atlas));
             all.addAll(hires.tiles());
             missingTextures.addAll(hires.missingTextures());
             untextured += hires.untexturedQuads();

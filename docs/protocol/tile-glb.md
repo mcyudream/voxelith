@@ -47,6 +47,16 @@
 - 单元格边长 = 全部贴图最大边长（原版多为 16；`water_flow`/`lava_flow` 首帧为 32×32 时整图集按 32px 单元格）。
 - 贴图尺寸不等于单元格时按最近邻缩放铺满单元格（UV 映射假定贴图铺满整格）。
 - 动画贴图（竖条）只取第一帧（宽×宽）。
+- **布局文件**：`atlas-layout.json`（`cellSize` / `cols` / `width` / `height` / `cellIndex`）。
+  全量打包是正方形（`height == width`，2 的幂）；**增量扩图集**只向下加行，宽度与列数不变，
+  因此 `height` 可能大于 `width`。UV 的 `u` 除以宽度、`v` 除以高度——老单元格的 UV 分毫不动，
+  已发布瓦片继续有效（`pixelSize` 作为历史字段仍写出，等于宽度，供老读者读）。
+- **清单**：`atlas: { url, size, height, textureCount }`；`size` = 图集宽，`height` = 图集高
+  （缺省 = 等于 `size`，老清单兼容）。前端只按 URL 加载 PNG，纹理尺寸由图片本身决定，
+  所以非正方形图集无需额外处理。
+- **扩容规则**：已发布图集里没有的贴图（新方块 / mod 方块）追加到下一个空闲单元格；
+  格子用满（行列都满）时向下加一行，高度按 `cellSize` 增长。取不到像素的贴图不扩容，
+  继续走第 0 格兜底（与全量打包一致）。
 
 ## LOD 图集页
 
@@ -90,4 +100,35 @@ LOD 瓦片的航拍色图按层拼成共享页，前端每层只解码一张纹�
 | COLOR_0 / `_LIGHT` / indices | 不变 | 同未压缩 |
 
 three.js `GLTFLoader` 原生解码该扩展，前端无需 meshopt decoder。
-图集 PNG 不量化（像素贴图保持无损）。`EXT_meshopt_compression` 熵编码仍预留，需 JNI/CLI 编码器后再接。
+图集 PNG 不量化（像素贴图保持无损）。熵编码见下一节（与量化可叠加）。
+
+## 可选熵编码（EXT_meshopt_compression）
+
+`EncodeOptions.meshopt()` 时，POSITION / NORMAL / TEXCOORD_0 与索引改写成
+`EXT_meshopt_compression`：
+
+```json
+{
+  "buffer": 1, "byteOffset": 0, "byteLength": 96, "byteStride": 12, "target": 34962,
+  "extensions": {
+    "EXT_meshopt_compression": {
+      "buffer": 0, "byteOffset": 0, "byteLength": 41, "byteStride": 12,
+      "mode": "ATTRIBUTES", "count": 8, "filter": "NONE"
+    }
+  }
+}
+```
+
+- **两条 buffer**：buffer 0 = BIN（真实压缩数据）；buffer 1 = 无 URI 的**占位回退缓冲**，
+  `byteLength` = 解压后总字节数，并带 `extensions.EXT_meshopt_compression.fallback = true`
+  （与 gltfpack 产物一致）。被压缩的 bufferView 按解压后的布局引用 buffer 1。
+- **mode**：顶点属性用 `ATTRIBUTES`（byteStride = 元素字节数：pos 12/8、nrm 12/4、uv 8/4），
+  索引用 `TRIANGLES`（byteStride 4，count = 索引数）。
+- **不压的部分**：COLOR_0 / `_LIGHT` 每顶点 3 字节（不满足「byteStride 被 4 整除」），
+  保持原样写在 BIN 里；图集 PNG 也不压。
+- **顶点流版本 0**：three.js 内置解码器（meshoptimizer 0.22 构建）只认 v0。
+  索引流用 v1。编码器是仓库内纯 Java 移植（`tile-context/infrastructure/meshopt`），
+  前端由 `GlbTileLoader` 构造时 `setMeshoptDecoder(MeshoptDecoder)` 提供解码。
+- **扩展是 required**：`extensionsRequired` 会声明 `EXT_meshopt_compression`（与量化叠加时同时声明
+  `KHR_mesh_quantization`），没有解码器的加载器会明确报错而不是读出占位数据。
+- **压缩收益**（64×64 网格瓦片）：未压缩 258 856 B → 量化 191 256 B → 量化+熵编码 50 228 B（约 1/5）。

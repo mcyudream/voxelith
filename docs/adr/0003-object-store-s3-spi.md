@@ -6,8 +6,11 @@
 ## 决策
 
 1. **端口在 map-context domain**：`ObjectStore`（put/get/exists/delete/list），键为相对发布根路径，与 URL `/maps/{key}` 对齐。存储是地图域的布局问题，不放到 tile-context。
+   Phase 7 追加 `listMeta(prefix)`（键 + 字节数 + 最后修改时间 + 版本标识）：对象存储侧没有
+   inotify，变更检测只能靠这些元数据比对（ADR 0006）。默认实现退化为只用键，
+   FILE 用 `size-mtime` 派生版本串，S3 解析 ListObjectsV2 的 ETag/Size/LastModified。
 2. **FILE 实现**：`FileObjectStore`，`{root}/{key}` 与现有 publish-dir 1:1；拒绝 `../` 越界。
-3. **S3 实现不引 AWS SDK**：`S3ObjectStore` 用 `HttpURLConnection` + 手写 AWS SigV4（`S3Signer` 纯函数可单测）。path-style 寻址 `/{bucket}/{key}`，兼容 MinIO / R2 / AWS。ListObjectsV2 用最小 XML 抽 `<Key>`。
+3. **S3 实现不引 AWS SDK**：`S3ObjectStore` 用 `HttpURLConnection` + 手写 AWS SigV4（`S3Signer` 纯函数可单测）。path-style 寻址 `/{bucket}/{key}`，兼容 MinIO / R2 / AWS。ListObjectsV2 用最小 XML 扫描抽 `<Contents>` 的 Key/LastModified/ETag/Size。
 4. **组合根**：`apps/voxelith-server` `ObjectStoreConfig`，`yudream.voxelith.storage.type=file|s3`。tile 产物仍先落本地工作目录（jshell 管线），S3 作为发布端点预留；不把 ObjectStore 注入 TileArtifactSink（那会让 tile.infrastructure 依赖 maps.domain，ArchUnit 禁止）。
 5. **密钥**：access-key / secret-key 走配置/环境变量，不入库。
 

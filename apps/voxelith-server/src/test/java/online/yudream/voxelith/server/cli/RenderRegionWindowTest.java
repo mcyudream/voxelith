@@ -26,7 +26,7 @@ class RenderRegionWindowTest {
                 Path.of("A:/work"), Path.of("A:/data/maps"), null,
                 null, null, null, null,
                 0, 0, true, BakeCommand.NO_MIN_Y, minX, maxX, minZ, maxZ,
-                "1.20.1", "0.16.14", false, List.of(), 0, 0);
+                "1.20.1", "0.16.14", false, List.of(), 0, 0, true);
     }
 
     private static Path regionDir(Path dir, String... files) throws IOException {
@@ -67,7 +67,7 @@ class RenderRegionWindowTest {
                 base.maxLevel(), base.sampleChunks(), base.lodAtlas(), base.minY(),
                 null, null, null, null,
                 base.mcVersion(), base.loaderVersion(), base.skipHarvest(), base.workerClasspath(),
-                base.maxChunks(), base.batchChunks());
+                base.maxChunks(), base.batchChunks(), base.meshopt());
 
         assertThat(RenderMapCli.regionWindow(limited, region)).containsExactly(new int[]{1, 0});
     }

@@ -34,7 +34,10 @@ public final class AtlasLayoutFiles {
             JsonObject root = new JsonObject();
             root.addProperty("cellSize", layout.cellSize());
             root.addProperty("cols", layout.cols());
-            root.addProperty("pixelSize", layout.pixelSize());
+            root.addProperty("width", layout.width());
+            root.addProperty("height", layout.height());
+            // 老读者（增量路径的历史版本）只认 pixelSize：写成宽度，正方形图集下语义一致
+            root.addProperty("pixelSize", layout.width());
             root.add("cellIndex", GSON.toJsonTree(layout.cellIndex()));
             Files.writeString(file, GSON.toJson(root));
             return file;
@@ -47,10 +50,15 @@ public final class AtlasLayoutFiles {
         try {
             JsonObject root = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
             Map<String, Integer> cells = GSON.fromJson(root.get("cellIndex"), CELL_INDEX);
+            // 兼容：老布局只有 pixelSize（正方形），新布局写 width/height
+            int width = root.has("width") ? root.get("width").getAsInt()
+                    : root.get("pixelSize").getAsInt();
+            int height = root.has("height") ? root.get("height").getAsInt() : width;
             return new AtlasLayout(
                     root.get("cellSize").getAsInt(),
                     root.get("cols").getAsInt(),
-                    root.get("pixelSize").getAsInt(),
+                    width,
+                    height,
                     cells);
         } catch (IOException e) {
             throw new UncheckedIOException("读图集布局失败: " + file, e);

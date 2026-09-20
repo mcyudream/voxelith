@@ -7,6 +7,8 @@ import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.domain.tile.TileEncoder;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry;
 import online.yudream.voxelith.tile.domain.tile.TileGeometry.Segment;
+import online.yudream.voxelith.tile.infrastructure.meshopt.MeshoptIndexCodec;
+import online.yudream.voxelith.tile.infrastructure.meshopt.MeshoptVertexCodec;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -26,6 +28,18 @@ import java.nio.charset.StandardCharsets;
  *
  * COLOR_0：逐顶点染色 RGB（无染色面为白色）；_LIGHT：逐顶点 (sky, block, ao)，
  * sky/block = 光照等级/15，ao = 遮挡级数/3（亮度 = 1 - 0.75×ao）。
+ *
+ * <p>{@link EncodeOptions#meshopt()} 时属性与索引改写为 {@code EXT_meshopt_compression}：
+ * 每个属性一条 bufferView（mode ATTRIBUTES，byteStride = 元素字节数），索引一条
+ * （mode TRIANGLES，byteStride 4，count = 索引数）。COLOR_0/_LIGHT 元素宽 3 字节，
+ * 不满足 meshopt「byteStride 必须被 4 整除」的约束，保持原样写在 BIN 里。</p>
+ *
+ * <p>与官方 gltfpack 一致的落盘形态：compressed-only 的 glb 需要两条 buffer ——
+ * buffer 0 = BIN（真实压缩数据），buffer 1 = 无 URI 的**占位回退缓冲**
+ * （{@code extensions.EXT_meshopt_compression.fallback = true}，byteLength = 解压后总字节数）。
+ * 被压缩的 bufferView 按「解压后的布局」引用 buffer 1（byteStride × count = byteLength），
+ * 扩展对象再指向 buffer 0 的真实压缩区间；这样不支持该扩展的加载器读到的是占位数据，
+ * 而声明了 extensionsRequired 时它们本就会拒绝加载。</p>
  */
 public final class GlbTileEncoder implements TileEncoder {
 
@@ -59,12 +73,26 @@ public final class GlbTileEncoder implements TileEncoder {
         boolean quantize = options != null && options.quantize();
         boolean linearFilter = options != null && options.linearFilter();
         boolean embedImage = options == null || options.embedImage();
+        boolean meshopt = options != null && options.meshopt();
         // 不内嵌时 PNG 完全不进 BIN（这正是省掉每片 1.7MB 的那一步）
         byte[] embeddedPng = embedImage ? atlasPng : null;
         float posScale = quantize ? positionMaxAbs(geometry) : 1f;
+        if (meshopt) {
+            return wrapGlb(encodeCompressed(geometry, embeddedPng, quantize, posScale, linearFilter));
+        }
         byte[] bin = buildBin(geometry, embeddedPng, quantize, posScale);
         byte[] json = gson.toJson(buildJson(geometry, embeddedPng, quantize, posScale, linearFilter))
                 .getBytes(StandardCharsets.UTF_8);
+        return wrapGlb(new JsonAndBin(json, bin));
+    }
+
+    private record JsonAndBin(byte[] json, byte[] bin) {
+    }
+
+    /** 组装 glb 容器：12 字节头 + JSON chunk（空格补齐）+ BIN chunk（0 补齐）。 */
+    private byte[] wrapGlb(JsonAndBin content) {
+        byte[] json = content.json();
+        byte[] bin = content.bin();
 
         int jsonPadded = pad4(json.length);
         int binPadded = pad4(bin.length);
@@ -98,22 +126,41 @@ public final class GlbTileEncoder implements TileEncoder {
     }
 
     private static void writeSegment(ByteArrayOutputStream bin, Segment segment, boolean quantize, float posScale) {
-        if (quantize) {
-            writeQuantizedPositions(bin, segment.positions(), posScale);
-            writeQuantizedNormals(bin, segment.normals());
-            writeQuantizedUvs(bin, segment.uvs());
-        } else {
-            writeFloats(bin, segment.positions());
-            writeFloats(bin, segment.normals());
-            writeFloats(bin, segment.uvs());
-        }
+        bin.writeBytes(positionsBytes(segment, quantize, posScale));
+        bin.writeBytes(normalsBytes(segment, quantize));
+        bin.writeBytes(uvsBytes(segment, quantize));
         bin.writeBytes(segment.colors());
         bin.writeBytes(segment.lights());
+        bin.writeBytes(indicesBytes(segment));
+    }
+
+    /** POSITION 字节（量化时 i16 + 每顶点 2 字节对齐填充，与 accessor 的 byteStride 一致）。 */
+    static byte[] positionsBytes(Segment segment, boolean quantize, float posScale) {
+        return quantize
+                ? quantizedPositions(segment.positions(), posScale)
+                : floatsBytes(segment.positions());
+    }
+
+    /** NORMAL 字节（量化时 i8 + 对齐填充）。 */
+    static byte[] normalsBytes(Segment segment, boolean quantize) {
+        return quantize ? quantizedNormals(segment.normals()) : floatsBytes(segment.normals());
+    }
+
+    /** TEXCOORD_0 字节（量化时 u16）；无 uv 的分段返回空数组。 */
+    static byte[] uvsBytes(Segment segment, boolean quantize) {
+        if (segment.uvs().length == 0) {
+            return new byte[0];
+        }
+        return quantize ? quantizedUvs(segment.uvs()) : floatsBytes(segment.uvs());
+    }
+
+    /** 索引字节（uint32 LE，每 quad 2 个三角形）。 */
+    static byte[] indicesBytes(Segment segment) {
         ByteBuffer indices = ByteBuffer.allocate(segment.indices().length * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (int index : segment.indices()) {
             indices.putInt(index);
         }
-        bin.writeBytes(indices.array());
+        return indices.array();
     }
 
     private JsonObject buildJson(TileGeometry geometry, byte[] atlasPng, boolean quantize, float posScale,
@@ -178,9 +225,9 @@ public final class GlbTileEncoder implements TileEncoder {
         root.add("bufferViews", bufferViews);
         root.add("accessors", accessors);
 
+        JsonArray buffers = new JsonArray();
         JsonObject buffer = new JsonObject();
         buffer.addProperty("byteLength", offset + pngBytes);
-        JsonArray buffers = new JsonArray();
         buffers.add(buffer);
         root.add("buffers", buffers);
 
@@ -293,6 +340,267 @@ public final class GlbTileEncoder implements TileEncoder {
         return indexOffset + indexBytes;
     }
 
+    // -----------------------------------------------------------------------
+    // meshopt（EXT_meshopt_compression）路径
+    // -----------------------------------------------------------------------
+
+    /**
+     * 压缩 glb：BIN 里只有压缩位流与 3 字节宽的属性，JSON 侧多一条无 URI 的占位回退缓冲。
+     * 与未压缩路径的差别只在 bufferView/accessor 的挂接方式，材质/节点/场景结构完全一致。
+     */
+    private JsonAndBin encodeCompressed(TileGeometry geometry, byte[] atlasPng, boolean quantize,
+                                        float posScale, boolean linearFilter) {
+        ByteArrayOutputStream bin = new ByteArrayOutputStream();
+        JsonArray bufferViews = new JsonArray();
+        JsonArray accessors = new JsonArray();
+        JsonArray primitives = new JsonArray();
+        int[] fallbackOffset = {0};
+        appendCompressedSegment(bin, bufferViews, accessors, primitives, geometry.opaque(), 0,
+                quantize, posScale, fallbackOffset);
+        if (!geometry.translucent().isEmpty()) {
+            appendCompressedSegment(bin, bufferViews, accessors, primitives, geometry.translucent(), 1,
+                    quantize, posScale, fallbackOffset);
+        }
+
+        boolean hasImage = atlasPng != null;
+        boolean textured = hasImage || geometry.opaque().uvs().length > 0
+                || geometry.translucent().uvs().length > 0;
+        int pngBytes = hasImage ? atlasPng.length : 0;
+
+        JsonObject root = new JsonObject();
+        JsonObject asset = new JsonObject();
+        asset.addProperty("version", "2.0");
+        asset.addProperty("generator", "yudream-voxelith");
+        root.add("asset", asset);
+
+        JsonArray extensionsUsed = new JsonArray();
+        JsonArray extensionsRequired = new JsonArray();
+        if (quantize) {
+            extensionsUsed.add("KHR_mesh_quantization");
+            extensionsRequired.add("KHR_mesh_quantization");
+        }
+        extensionsUsed.add("EXT_meshopt_compression");
+        extensionsRequired.add("EXT_meshopt_compression");
+        root.add("extensionsUsed", extensionsUsed);
+        root.add("extensionsRequired", extensionsRequired);
+
+        if (hasImage) {
+            int pngOffset = bin.size();
+            bin.writeBytes(atlasPng);
+            bufferViews.add(bufferView(pngOffset, pngBytes, 0));
+            int pngViewIndex = bufferViews.size() - 1;
+
+            JsonObject image = new JsonObject();
+            image.addProperty("bufferView", pngViewIndex);
+            image.addProperty("mimeType", "image/png");
+            JsonArray images = new JsonArray();
+            images.add(image);
+            root.add("images", images);
+
+            JsonObject sampler = new JsonObject();
+            int filter = linearFilter ? FILTER_LINEAR : FILTER_NEAREST;
+            sampler.addProperty("magFilter", filter);
+            sampler.addProperty("minFilter", filter);
+            if (linearFilter) {
+                sampler.addProperty("wrapS", 33071);
+                sampler.addProperty("wrapT", 33071);
+            }
+            JsonArray samplers = new JsonArray();
+            samplers.add(sampler);
+            root.add("samplers", samplers);
+
+            JsonObject texture = new JsonObject();
+            texture.addProperty("sampler", 0);
+            texture.addProperty("source", 0);
+            JsonArray textures = new JsonArray();
+            textures.add(texture);
+            root.add("textures", textures);
+        }
+
+        root.add("bufferViews", bufferViews);
+        root.add("accessors", accessors);
+
+        JsonArray buffers = new JsonArray();
+        JsonObject binBuffer = new JsonObject();
+        binBuffer.addProperty("byteLength", bin.size());
+        buffers.add(binBuffer);
+        // 占位回退缓冲：无 URI、无数据，只声明解压后布局的容量（与 gltfpack 产物一致）
+        JsonObject fallback = new JsonObject();
+        fallback.addProperty("byteLength", fallbackOffset[0]);
+        JsonObject fallbackExt = new JsonObject();
+        fallbackExt.addProperty("fallback", true);
+        JsonObject fallbackSlot = new JsonObject();
+        fallbackSlot.add("EXT_meshopt_compression", fallbackExt);
+        fallback.add("extensions", fallbackSlot);
+        buffers.add(fallback);
+        root.add("buffers", buffers);
+
+        JsonArray materials = new JsonArray();
+        materials.add(material(textured ? "MASK" : "OPAQUE", 1f, hasImage));
+        if (!geometry.translucent().isEmpty()) {
+            materials.add(material("BLEND", WATER_ALPHA, hasImage));
+        }
+        root.add("materials", materials);
+
+        JsonObject mesh = new JsonObject();
+        mesh.add("primitives", primitives);
+        JsonArray meshes = new JsonArray();
+        meshes.add(mesh);
+        root.add("meshes", meshes);
+
+        JsonObject node = new JsonObject();
+        node.addProperty("mesh", 0);
+        if (quantize) {
+            JsonArray scale = new JsonArray();
+            scale.add(posScale);
+            scale.add(posScale);
+            scale.add(posScale);
+            node.add("scale", scale);
+        }
+        JsonArray nodes = new JsonArray();
+        nodes.add(node);
+        root.add("nodes", nodes);
+
+        JsonObject scene = new JsonObject();
+        JsonArray sceneNodes = new JsonArray();
+        sceneNodes.add(0);
+        scene.add("nodes", sceneNodes);
+        JsonArray scenes = new JsonArray();
+        scenes.add(scene);
+        root.add("scenes", scenes);
+        root.addProperty("scene", 0);
+
+        return new JsonAndBin(gson.toJson(root).getBytes(StandardCharsets.UTF_8), bin.toByteArray());
+    }
+
+    /**
+     * 追加一个压缩分段的 bufferView/accessor/primitive。
+     *
+     * <p>位置/法线/UV 走 ATTRIBUTES 模式，索引走 TRIANGLES 模式；
+     * COLOR_0/_LIGHT 元素宽 3 字节（不满足 byteStride 被 4 整除的扩展约束）保持原样。</p>
+     */
+    private static void appendCompressedSegment(ByteArrayOutputStream bin, JsonArray bufferViews,
+                                                JsonArray accessors, JsonArray primitives, Segment segment,
+                                                int materialIndex, boolean quantize, float posScale,
+                                                int[] fallbackOffset) {
+        if (segment.isEmpty()) {
+            return;
+        }
+        int vertexCount = segment.vertexCount();
+        boolean hasUv = segment.uvs().length > 0;
+        int posSize = quantize ? 8 : 12;
+        int nrmSize = quantize ? 4 : 12;
+        int uvSize = quantize ? 4 : 8;
+
+        int posView = appendCompressedAttribute(bin, bufferViews, positionsBytes(segment, quantize, posScale),
+                vertexCount, posSize, fallbackOffset);
+        int nrmView = appendCompressedAttribute(bin, bufferViews, normalsBytes(segment, quantize),
+                vertexCount, nrmSize, fallbackOffset);
+        int uvView = -1;
+        if (hasUv) {
+            uvView = appendCompressedAttribute(bin, bufferViews, uvsBytes(segment, quantize),
+                    vertexCount, uvSize, fallbackOffset);
+        }
+
+        int colorView = bufferViews.size();
+        int colorOffset = bin.size();
+        bin.writeBytes(segment.colors());
+        bufferViews.add(bufferView(colorOffset, segment.colors().length, TARGET_ARRAY_BUFFER));
+        int lightView = bufferViews.size();
+        int lightOffset = bin.size();
+        bin.writeBytes(segment.lights());
+        bufferViews.add(bufferView(lightOffset, segment.lights().length, TARGET_ARRAY_BUFFER));
+
+        int indexCount = segment.indices().length;
+        byte[] compressedIndices = MeshoptIndexCodec.encode(segment.indices(), vertexCount);
+        int indexOffset = bin.size();
+        bin.writeBytes(compressedIndices);
+        int indexView = bufferViews.size();
+        appendCompressedView(bufferViews, indexOffset, compressedIndices.length, fallbackOffset[0],
+                4, indexCount, TARGET_ELEMENT_ARRAY_BUFFER, "TRIANGLES");
+        fallbackOffset[0] += indexCount * 4;
+
+        int accessorBase = accessors.size();
+        float[] minMax = positionMinMax(segment.positions());
+        int posType = quantize ? COMPONENT_SHORT : COMPONENT_FLOAT;
+        int nrmType = quantize ? COMPONENT_BYTE : COMPONENT_FLOAT;
+        int uvType = quantize ? COMPONENT_USHORT : COMPONENT_FLOAT;
+        accessors.add(accessor(posView, posType, vertexCount, "VEC3", quantize,
+                quantizedPositionMinMax(minMax, posScale, quantize)[0],
+                quantizedPositionMinMax(minMax, posScale, quantize)[1]));
+        accessors.add(accessor(nrmView, nrmType, vertexCount, "VEC3", quantize, null, null));
+        int uvAccessor = -1;
+        if (hasUv) {
+            uvAccessor = accessors.size();
+            accessors.add(accessor(uvView, uvType, vertexCount, "VEC2", quantize, null, null));
+        }
+        int colorAccessor = accessors.size();
+        accessors.add(accessor(colorView, COMPONENT_UBYTE, vertexCount, "VEC3", true, null, null));
+        accessors.add(accessor(lightView, COMPONENT_UBYTE, vertexCount, "VEC3", true, null, null));
+        accessors.add(accessor(indexView, COMPONENT_UINT, indexCount, "SCALAR", false, null, null));
+
+        JsonObject attributes = new JsonObject();
+        attributes.addProperty("POSITION", accessorBase);
+        attributes.addProperty("NORMAL", accessorBase + 1);
+        if (hasUv) {
+            attributes.addProperty("TEXCOORD_0", uvAccessor);
+        }
+        attributes.addProperty("COLOR_0", colorAccessor);
+        attributes.addProperty("_LIGHT", colorAccessor + 1);
+        JsonObject primitive = new JsonObject();
+        primitive.add("attributes", attributes);
+        primitive.addProperty("indices", colorAccessor + 2);
+        primitive.addProperty("material", materialIndex);
+        primitives.add(primitive);
+    }
+
+    /** 压缩顶点属性：写 BIN 并追加 bufferView，返回其下标。 */
+    private static int appendCompressedAttribute(ByteArrayOutputStream bin, JsonArray bufferViews, byte[] raw,
+                                                 int vertexCount, int stride, int[] fallbackOffset) {
+        byte[] compressed = MeshoptVertexCodec.encode(raw, vertexCount, stride);
+        int offset = bin.size();
+        bin.writeBytes(compressed);
+        int view = bufferViews.size();
+        appendCompressedView(bufferViews, offset, compressed.length, fallbackOffset[0],
+                stride, vertexCount, TARGET_ARRAY_BUFFER, "ATTRIBUTES");
+        fallbackOffset[0] += raw.length;
+        return view;
+    }
+
+    /**
+     * 追加一条被压缩的 bufferView：自身描述「解压后布局」（引用占位回退缓冲 1），
+     * 扩展对象描述 BIN（buffer 0）里的真实压缩区间。
+     */
+    private static void appendCompressedView(JsonArray bufferViews, int binOffset, int compressedBytes,
+                                             int fallbackOffset, int stride, int count,
+                                             int target, String mode) {
+        JsonObject view = new JsonObject();
+        view.addProperty("buffer", 1);
+        view.addProperty("byteOffset", fallbackOffset);
+        view.addProperty("byteLength", stride * count);
+        if (target == TARGET_ARRAY_BUFFER) {
+            view.addProperty("byteStride", stride);
+        }
+        if (target != 0) {
+            view.addProperty("target", target);
+        }
+
+        JsonObject extension = new JsonObject();
+        extension.addProperty("buffer", 0);
+        extension.addProperty("byteOffset", binOffset);
+        extension.addProperty("byteLength", compressedBytes);
+        extension.addProperty("byteStride", stride);
+        extension.addProperty("mode", mode);
+        extension.addProperty("count", count);
+        if (!"TRIANGLES".equals(mode)) {
+            extension.addProperty("filter", "NONE");
+        }
+        JsonObject extensions = new JsonObject();
+        extensions.add("EXT_meshopt_compression", extension);
+        view.add("extensions", extensions);
+        bufferViews.add(view);
+    }
+
     private static JsonObject material(String alphaMode, float alpha, boolean textured) {
         JsonObject pbr = new JsonObject();
         if (textured) {
@@ -370,19 +678,19 @@ public final class GlbTileEncoder implements TileEncoder {
         return new float[]{minX, minY, minZ, maxX, maxY, maxZ};
     }
 
-    private static void writeFloats(ByteArrayOutputStream out, float[] values) {
+    private static byte[] floatsBytes(float[] values) {
         ByteBuffer buffer = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (float value : values) {
             buffer.putFloat(value);
         }
-        out.writeBytes(buffer.array());
+        return buffer.array();
     }
 
     /**
      * POSITION → normalized int16，按整瓦片统一 posScale 归一化（node.scale 还原）。
      * 每顶点 8 字节（xyz + 对齐 pad），满足 VEC3 int16 的 4 字节对齐。
      */
-    private static void writeQuantizedPositions(ByteArrayOutputStream out, float[] positions, float posScale) {
+    private static byte[] quantizedPositions(float[] positions, float posScale) {
         ByteBuffer buffer = ByteBuffer.allocate(positions.length / 3 * 8).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < positions.length; i += 3) {
             buffer.putShort(quantizeSnorm16(positions[i] / posScale));
@@ -390,11 +698,11 @@ public final class GlbTileEncoder implements TileEncoder {
             buffer.putShort(quantizeSnorm16(positions[i + 2] / posScale));
             buffer.putShort((short) 0);
         }
-        out.writeBytes(buffer.array());
+        return buffer.array();
     }
 
     /** NORMAL → normalized int8 VEC3 + pad 字节，单位向量直接量化（不用 octahedron，three.js 默认识别）。 */
-    private static void writeQuantizedNormals(ByteArrayOutputStream out, float[] normals) {
+    private static byte[] quantizedNormals(float[] normals) {
         int vertices = normals.length / 3;
         byte[] packed = new byte[pad4(vertices * 4)];
         for (int i = 0; i < vertices; i++) {
@@ -402,19 +710,19 @@ public final class GlbTileEncoder implements TileEncoder {
             packed[i * 4 + 1] = quantizeSnorm8(normals[i * 3 + 1]);
             packed[i * 4 + 2] = quantizeSnorm8(normals[i * 3 + 2]);
         }
-        out.writeBytes(packed);
+        return packed;
     }
 
     /** TEXCOORD_0 → normalized uint16，UV 假定 0..1（图集已重映射）。 */
-    private static void writeQuantizedUvs(ByteArrayOutputStream out, float[] uvs) {
+    private static byte[] quantizedUvs(float[] uvs) {
         if (uvs.length == 0) {
-            return;
+            return new byte[0];
         }
         ByteBuffer buffer = ByteBuffer.allocate(uvs.length * 2).order(ByteOrder.LITTLE_ENDIAN);
         for (float uv : uvs) {
             buffer.putShort(quantizeUnorm16(uv));
         }
-        out.writeBytes(buffer.array());
+        return buffer.array();
     }
 
     static float positionMaxAbs(TileGeometry geometry) {

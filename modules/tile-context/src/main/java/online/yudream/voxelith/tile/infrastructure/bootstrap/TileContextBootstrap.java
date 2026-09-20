@@ -2,11 +2,13 @@ package online.yudream.voxelith.tile.infrastructure.bootstrap;
 
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
 import online.yudream.voxelith.tile.application.GenerateTilesUseCase;
+import online.yudream.voxelith.tile.application.EnsureAtlasCapacityUseCase;
 import online.yudream.voxelith.tile.application.PublishManifestUseCase;
 import online.yudream.voxelith.tile.application.PublishedAtlas;
 import online.yudream.voxelith.tile.application.TextureColorSampler;
 import online.yudream.voxelith.tile.application.VertexColorTileExporter;
 import online.yudream.voxelith.tile.domain.atlas.TexturePixelSource;
+import online.yudream.voxelith.tile.domain.tile.EncodeOptions;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileManifestPublisher;
 import online.yudream.voxelith.tile.infrastructure.artifact.FilePublishedAtlas;
 import online.yudream.voxelith.tile.infrastructure.artifact.FileTileArtifactSink;
@@ -55,6 +57,12 @@ public final class TileContextBootstrap {
         return new VertexColorTileExporter(new GlbTileEncoder(), new FileTileArtifactSink());
     }
 
+    /** LOD 瓦片导出：{@code meshopt=true} 时同样走 EXT_meshopt_compression 熵编码。 */
+    public static VertexColorTileExporter openVertexColorTileExporter(boolean meshopt) {
+        return new VertexColorTileExporter(new GlbTileEncoder(), new FileTileArtifactSink(),
+                EncodeOptions.uncompressed().withMeshopt(meshopt));
+    }
+
     /** PNG 编码器（LOD 航拍色图嵌入 glb）。 */
     public static PngImageCodec openImageCodec() {
         return new PngImageCodec();
@@ -63,5 +71,17 @@ public final class TileContextBootstrap {
     /** 已发布图集读写（增量重跑复用 UV）。 */
     public static PublishedAtlas openPublishedAtlas(Path publishRoot) {
         return new FilePublishedAtlas(publishRoot);
+    }
+
+    /**
+     * 增量扩图集用例：已发布图集里缺的贴图（新方块/mod 方块）追加进去，
+     * 老单元格与已发布瓦片的 UV 不动。
+     */
+    public static EnsureAtlasCapacityUseCase openAtlasExpander(Path publishRoot,
+                                                                ResolvedResourceCatalog catalog) {
+        return new EnsureAtlasCapacityUseCase(
+                openPublishedAtlas(publishRoot),
+                new CatalogTexturePixelSource(catalog),
+                new PngImageCodec());
     }
 }

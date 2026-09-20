@@ -16,6 +16,7 @@ import online.yudream.voxelith.sharedkernel.vo.ChunkPos;
 import online.yudream.voxelith.sharedkernel.vo.RegionPos;
 import online.yudream.voxelith.sharedkernel.vo.TilePos;
 import online.yudream.voxelith.tile.application.AtlasReuse;
+import online.yudream.voxelith.tile.application.EnsureAtlasCapacityUseCase;
 import online.yudream.voxelith.tile.application.GenerateTilesUseCase;
 import online.yudream.voxelith.tile.application.PublishedAtlas;
 import online.yudream.voxelith.tile.application.TileCommand;
@@ -43,6 +44,8 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
     private final GenerateTilesUseCase tiles;
     private final GenerateLodPyramidUseCase lod;
     private final PublishedAtlas atlas;
+    /** 可选：增量扩图集（缺贴图时把新贴图追加进已发布图集）。null = 不扩容（新贴图落兜底格）。 */
+    private final EnsureAtlasCapacityUseCase atlasExpander;
     private final HeightfieldStore heightfield;
     /** 发布地图根（{publishDir}/{mapId}），瓦片直接覆盖已发布 glb。 */
     private final Path mapDir;
@@ -54,11 +57,23 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
                                           PublishedAtlas atlas,
                                           HeightfieldStore heightfield,
                                           Path mapDir) {
+        this(world, bake, tiles, lod, atlas, null, heightfield, mapDir);
+    }
+
+    public RegionIncrementalRenderAdapter(WorldBlockAccess world,
+                                          BakeChunksUseCase bake,
+                                          GenerateTilesUseCase tiles,
+                                          GenerateLodPyramidUseCase lod,
+                                          PublishedAtlas atlas,
+                                          EnsureAtlasCapacityUseCase atlasExpander,
+                                          HeightfieldStore heightfield,
+                                          Path mapDir) {
         this.world = world;
         this.bake = bake;
         this.tiles = tiles;
         this.lod = lod;
         this.atlas = atlas;
+        this.atlasExpander = atlasExpander;
         this.heightfield = heightfield;
         this.mapDir = mapDir;
     }
@@ -75,6 +90,13 @@ public final class RegionIncrementalRenderAdapter implements IncrementalRenderPo
             List<ChunkPos> chunks = chunksOf(region);
             BakeOutcome baked = bake.bake(new BakeCommand(chunks, outputDir.resolve("bake"), 0));
             Map<ChunkPos, BakedChunkMeshData> meshes = BakedMeshMapper.toData(baked.meshes());
+
+            // 增量扩图集：这次用到的贴图若不在已发布图集里（新方块/mod 方块），先追加进去。
+            // 不补的话这些面会整片渲染成品红兜底格。老单元格序号不动，已发布瓦片 UV 依旧有效。
+            if (reuse != null && atlasExpander != null) {
+                reuse = atlasExpander.ensure(job.mapId(), reuse,
+                        GenerateTilesUseCase.usedTextures(meshes)).atlas();
+            }
 
             for (TilePos expected : expectedHiresTiles(region)) {
                 sha1ByUrl.put(urlOf(expected), "");

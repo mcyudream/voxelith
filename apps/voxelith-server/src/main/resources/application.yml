@@ -62,6 +62,12 @@ yudream:
     incremental:
       enabled: false
       world-dir:           # 存档根目录（含 region/）
+      # 变更检测方式：local = WatchService 监听本地 region 目录；
+      # object-store = 存档在 S3/MinIO/R2 上（没有 inotify），按 poll-seconds 轮询 ETag 比对，
+      # 变更的 region 自动镜像到上面的 world-dir/region/（增量渲染读的是本地 Anvil 文件）
+      watch-mode: local
+      object-prefix:      # object-store 模式下的 region 前缀（留空按维度推断 region/、DIM-1/region/、DIM1/region/）
+      poll-seconds: 15
       pack-dir:            # 资源包/原版 jar 路径，bake 静态模型用
       mod-jars:            # mod jar 路径（逗号分隔），叠在原版包之上，让 mod 方块/贴图可解析
       models-file:         # runtime 采集产物 models.json.gz；留空则探测 work-dir/models.json.gz

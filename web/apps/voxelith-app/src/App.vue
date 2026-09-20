@@ -10,6 +10,9 @@ import {
   LightingUniforms,
   loadManifest,
   MapEngine,
+  MarkerLayer,
+  setYSlice,
+  sliceRaycastTargets,
   supportsDisplayP3,
   TileManager,
   TiltOrbitControls,
@@ -19,10 +22,15 @@ import {
   type TerrainMedium,
   type TerrainProbe,
 } from "@yudream/voxelith-viewer";
-import type { MapManifest } from "@yudream/voxelith-core";
+import {
+  markerSetSchema,
+  type MapManifest,
+  type Marker,
+  type MarkerSet,
+} from "@yudream/voxelith-core";
 import * as THREE from "three";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import { deleteMap } from "./api";
+import { deleteMap, loadMarkers, saveMarkers } from "./api";
 import UploadDialog from "./components/UploadDialog.vue";
 
 interface MapSummary {
@@ -59,6 +67,14 @@ const status = ref<"loading" | "ready" | "error">("loading");
 const errorMessage = ref("");
 const mode = ref<CameraMode>("flight");
 const showSettings = ref(false);
+/** 标注面板（图层开关 + POI 列表 + 在当前位置添加） */
+const showMarkers = ref(false);
+/** 已加载的标注集（原样保留，保存时整表写回） */
+const markerSets = ref<MarkerSet[]>([]);
+/** 每个标注集的显隐（默认取 defaultHidden） */
+const markerVisibility = reactive<Record<string, boolean>>({});
+/** 标注读写状态提示 */
+const markerStatus = ref("");
 /** 上传地图弹窗（上传存档 → 二维框选渲染范围 → 后台渲染） */
 const showUpload = ref(false);
 const cameraPos = reactive({ x: 0, y: 0, z: 0 });
@@ -84,6 +100,10 @@ const settings = reactive({
   autoDistance: localStorage.getItem("yudream.autoDistance") !== "0",
   /** 手动视距（区块，8～32） */
   distanceChunks: Math.min(32, Math.max(8, Number(localStorage.getItem("yudream.distanceChunks")) || 16)),
+  /** Y 轴切片：只显示 [ySliceMin, ySliceMax] 之间的几何（含端点，世界 Y） */
+  ySliceEnabled: false,
+  ySliceMin: -64,
+  ySliceMax: 320,
 });
 
 /** 设备性能分档（引擎创建后探测，含 localStorage 缓存） */
@@ -98,6 +118,7 @@ let engine: MapEngine | null = null;
 let controls: CameraControls | null = null;
 let tileManager: TileManager | null = null;
 let adaptive: AdaptiveDistance | null = null;
+let markerLayer: MarkerLayer | null = null;
 /** 浮点原点：常规坐标（±2^24 内）下不触发；边疆量级自动重定基防 float32 精度撕裂 */
 const floatingOrigin = new FloatingOrigin();
 let posTimer = 0;
@@ -160,7 +181,9 @@ function castTerrainRay(
   if (end && end !== start) {
     groups.push(end);
   }
-  if (groups.length === 0) {
+  // Y 轴切片开着时，被裁掉的高度分桶不参与碰撞——否则会「站在空气上」
+  const targets = sliceRaycastTargets(groups);
+  if (targets.length === 0) {
     return null;
   }
   terrainRaycaster.set(
@@ -169,7 +192,7 @@ function castTerrainRay(
   );
   terrainRaycaster.near = 0;
   terrainRaycaster.far = maxDistance;
-  const hits = terrainRaycaster.intersectObjects(groups, true);
+  const hits = terrainRaycaster.intersectObjects(targets, true);
   return hits.length > 0 ? hits[0]!.distance : null;
 }
 
@@ -218,6 +241,164 @@ function clampToMapBounds(position: THREE.Vector3): void {
     m.boundsMin[2] - origin.z + FIRST_PERSON_EDGE_MARGIN,
     m.boundsMax[2] - origin.z - FIRST_PERSON_EDGE_MARGIN,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 标注（markers.json）：渲染 + 面板交互
+// ---------------------------------------------------------------------------
+
+/**
+ * 把标注集交给渲染层。
+ *
+ * 每个标注集都过一遍 core 的 zod schema：标注文件是手写或脚本生成的，
+ * 一条坏标注不该让整张图的标注全丢——坏的跳过并在面板里提示数量。
+ */
+function applyMarkerSets(raw: unknown[]): void {
+  const valid: MarkerSet[] = [];
+  let invalid = 0;
+  for (const key of Object.keys(markerVisibility)) {
+    delete markerVisibility[key];
+  }
+  for (const item of raw) {
+    const parsed = markerSetSchema.safeParse(item);
+    if (!parsed.success) {
+      invalid++;
+      continue;
+    }
+    valid.push(parsed.data);
+    markerVisibility[parsed.data.id] = !parsed.data.defaultHidden;
+  }
+  markerSets.value = valid;
+  markerLayer?.setMarkerSets(valid);
+  markerStatus.value = invalid > 0 ? `${invalid} 组标注格式不合法，已跳过` : "";
+}
+
+/** 拉取当前地图的标注（静态 markers.json 优先，其次 REST）。 */
+async function refreshMarkers(mapId: string): Promise<void> {
+  if (!mapId) {
+    applyMarkerSets([]);
+    return;
+  }
+  try {
+    const file = await loadMarkers(mapId);
+    applyMarkerSets(Array.isArray(file?.sets) ? file.sets : []);
+  } catch (e) {
+    applyMarkerSets([]);
+    markerStatus.value = `标注加载失败：${(e as Error).message}`;
+  }
+}
+
+function toggleMarkerSet(id: string, visible: boolean): void {
+  markerVisibility[id] = visible;
+  markerLayer?.setSetVisible(id, visible);
+}
+
+/** 面板列表用：不同标注类型的锚点（POI = 点，其余取包围盒中心/首点附近）。 */
+function markerAnchor(marker: Marker): { x: number; y: number; z: number } {
+  switch (marker.type) {
+    case "poi":
+      return marker.position;
+    case "line": {
+      const point = marker.points[0] ?? { x: 0, y: 0, z: 0 };
+      return point;
+    }
+    case "shape": {
+      const points = marker.shape;
+      const y = marker.shapeY;
+      return {
+        x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+        y,
+        z: points.reduce((sum, p) => sum + p.z, 0) / points.length,
+      };
+    }
+    case "extrude": {
+      const points = marker.shape;
+      return {
+        x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+        y: (marker.shapeMinY + marker.shapeMaxY) / 2,
+        z: points.reduce((sum, p) => sum + p.z, 0) / points.length,
+      };
+    }
+    case "box":
+      return {
+        x: (marker.min.x + marker.max.x) / 2,
+        y: (marker.min.y + marker.max.y) / 2,
+        z: (marker.min.z + marker.max.z) / 2,
+      };
+    default:
+      return { x: 0, y: 0, z: 0 };
+  }
+}
+
+const MARKER_KINDS: Record<Marker["type"], string> = {
+  poi: "点",
+  line: "线",
+  shape: "面",
+  extrude: "体",
+  box: "盒",
+};
+
+function markerKind(marker: Marker): string {
+  return MARKER_KINDS[marker.type] ?? "?";
+}
+
+/** 飞到某个标注：落在它斜上方并看向它（第一人称模式会再落到该列地表）。 */
+function flyToMarker(anchor: { x: number; y: number; z: number }): void {
+  if (!engine) {
+    return;
+  }
+  engine.camera.position.set(anchor.x + 24, anchor.y + 18, anchor.z + 24);
+  engine.camera.lookAt(anchor.x, anchor.y, anchor.z);
+  controls?.dispose();
+  controls = createControls(mode.value);
+}
+
+/**
+ * 在相机当前位置添加一个 POI 并整表写回。
+ *
+ * 位置取世界坐标（渲染空间 + 浮点原点），否则边疆坐标地图上标注会整体偏掉。
+ */
+async function addMarkerAtCamera(): Promise<void> {
+  if (!engine || !activeMapId.value) {
+    return;
+  }
+  const label = window.prompt("标注名称", "新标注");
+  if (label === null || label.trim() === "") {
+    return;
+  }
+  const x = engine.camera.position.x + floatingOrigin.origin.x;
+  const y = engine.camera.position.y + floatingOrigin.origin.y;
+  const z = engine.camera.position.z + floatingOrigin.origin.z;
+  const sets = markerSets.value.map((set) => ({ ...set, markers: [...set.markers] }));
+  let target = sets.find((set) => set.id === "my-annotations");
+  if (!target) {
+    target = {
+      id: "my-annotations",
+      label: "我的标注",
+      toggleable: true,
+      defaultHidden: false,
+      sorting: 100,
+      markers: [],
+    };
+    sets.push(target);
+  }
+  const marker: Marker = {
+    id: `poi-${Date.now()}`,
+    type: "poi",
+    label: label.trim(),
+    position: { x, y, z },
+    minDistance: 0,
+    maxDistance: Number.MAX_SAFE_INTEGER,
+    style: { fillColor: "#e67e22", icon: "★", depthTest: false },
+  };
+  target.markers.push(marker);
+  try {
+    await saveMarkers(activeMapId.value, sets);
+    applyMarkerSets(sets);
+    markerStatus.value = `已添加「${label.trim()}」`;
+  } catch (e) {
+    markerStatus.value = `保存失败：${(e as Error).message}`;
+  }
 }
 
 function createControls(m: CameraMode, tiltTarget?: THREE.Vector3): CameraControls {
@@ -271,6 +452,12 @@ async function openMap(mapId: string): Promise<void> {
     const baseUrl = mapBaseUrl(mapId);
     const m = await loadManifest(baseUrl);
     manifest.value = m;
+    // 换图时把 Y 切片的下滑杆范围对齐到新图的实际高度，并把区间重置为整图
+    settings.ySliceMin = Math.floor(m.boundsMin[1]);
+    settings.ySliceMax = Math.ceil(m.boundsMax[1]) + 1;
+    applyYSliceSettings();
+    // 标注随地图切换（静态 markers.json 优先，其次 REST）
+    void refreshMarkers(mapId);
     const cx = (m.boundsMin[0] + m.boundsMax[0]) / 2;
     const cz = (m.boundsMin[2] + m.boundsMax[2]) / 2;
     engine.camera.position.set(cx, m.boundsMax[1] + 60, cz + 80);
@@ -521,6 +708,60 @@ watch(
     LightingUniforms.aoStrength.value = v;
   },
 );
+
+/**
+ * Y 轴切片：只把「世界 Y ∈ [min, max]」的几何留给渲染与碰撞。
+ * 关闭时把区间还给无界哨兵（uniform 开关为 0，着色器里那条 discard 直接短路）。
+ */
+function applyYSliceSettings(): void {
+  if (!settings.ySliceEnabled) {
+    setYSlice(null);
+    return;
+  }
+  setYSlice({ min: settings.ySliceMin, max: settings.ySliceMax });
+}
+
+/** Y 切片滑杆范围：跟随当前地图的实际高度（换图时重置）。 */
+const sliceBounds = computed(() => {
+  const m = manifest.value;
+  const min = m ? Math.floor(m.boundsMin[1]) : -64;
+  const max = m ? Math.ceil(m.boundsMax[1]) + 1 : 320;
+  return { min, max: Math.max(min + 2, max) };
+});
+
+/**
+ * 预设切片：以**相机当前高度**为界（渲染空间 Y + 浮点原点 = 世界 Y）。
+ * 比写死 y=63「海平面」靠谱——校园/空岛存档的地表高度与海平面无关。
+ */
+function applySlicePreset(kind: "above" | "below" | "band" | "all"): void {
+  const bounds = sliceBounds.value;
+  const clamp = (v: number): number => Math.min(bounds.max, Math.max(bounds.min, Math.round(v)));
+  if (kind === "all") {
+    settings.ySliceMin = bounds.min;
+    settings.ySliceMax = bounds.max;
+    return;
+  }
+  const cameraY = engine ? engine.camera.position.y + floatingOrigin.origin.y : settings.ySliceMin;
+  if (kind === "above") {
+    settings.ySliceMin = clamp(cameraY);
+    settings.ySliceMax = bounds.max;
+  } else if (kind === "below") {
+    settings.ySliceMin = bounds.min;
+    settings.ySliceMax = clamp(cameraY);
+  } else {
+    settings.ySliceMin = clamp(cameraY - 64);
+    settings.ySliceMax = clamp(cameraY + 64);
+  }
+  if (settings.ySliceMax - settings.ySliceMin < 1) {
+    settings.ySliceMax = Math.min(bounds.max, settings.ySliceMin + 1);
+    settings.ySliceMin = Math.max(bounds.min, settings.ySliceMax - 1);
+  }
+}
+
+watch(
+  () => [settings.ySliceEnabled, settings.ySliceMin, settings.ySliceMax],
+  () => applyYSliceSettings(),
+);
 watch(
   () => settings.displayP3,
   (v) => {
@@ -550,6 +791,9 @@ watch(
 onMounted(async () => {
   if (!canvasRef.value) return;
   engine = new MapEngine({ canvas: canvasRef.value, displayP3: settings.displayP3 });
+  // 标注层挂在场景根下：与瓦片一起被浮点原点重定基平移，坐标直接用世界坐标
+  markerLayer = new MarkerLayer();
+  engine.scene.add(markerLayer.object3d);
   // 设备性能静态预判（结果带 localStorage 缓存）：决定初始视距与目标帧率
   deviceProfile.value = detectDeviceProfile(engine.renderer.getContext());
   // 诊断句柄：浏览器控制台/自动化可直接操作相机与场景
@@ -558,9 +802,28 @@ onMounted(async () => {
     get tileManager() { return tileManager; },
     get controls() { return controls; },
     get adaptive() { return adaptive; },
+    get markerLayer() { return markerLayer; },
     deviceProfile,
     // 烘焙光照全局参数（天空光/方块光/AO 强度，调 value 即时生效）
     lighting: LightingUniforms,
+    /** 排障/自动化：直接设 Y 轴切片（null = 关闭） */
+    setYSlice(min: number, max: number) {
+      settings.ySliceEnabled = true;
+      settings.ySliceMin = min;
+      settings.ySliceMax = max;
+    },
+    clearYSlice() {
+      settings.ySliceEnabled = false;
+    },
+    /** 排障/自动化：当前标注集（含每条的 id 与类型） */
+    markers() {
+      return markerSets.value.map((set) => ({
+        id: set.id,
+        label: set.label,
+        visible: markerVisibility[set.id] !== false,
+        markers: set.markers.map((marker) => ({ id: marker.id, type: marker.type, label: marker.label })),
+      }));
+    },
     /** 排障：只看 hires / 只看 lod / 全部。每帧 update 会尊重此过滤。 */
     setLayer(filter: "all" | "hires" | "lod") {
       tileManager?.setLayerFilter(filter);
@@ -579,6 +842,8 @@ onMounted(async () => {
   };
   controls = createControls("flight");
   engine.addFrameHook((dt) => controls?.update(dt));
+  // 标注：距离剔除与 POI 屏幕尺寸（切图/换图不影响，内容由 refreshMarkers 决定）
+  engine.addFrameHook(() => markerLayer?.update(engine!.camera));
   engine.addFrameHook(() => {
     // 先重定基再调度瓦片：相机/场景平移后，目标点与瓦片逻辑同步对齐到世界坐标
     const delta = engine && floatingOrigin.maybeRebase(engine.camera, engine.scene);
@@ -675,6 +940,14 @@ onUnmounted(() => {
       <button class="text-btn" title="上传存档并自定义渲染范围" @click="showUpload = true">
         <span class="plus">＋</span> 上传地图
       </button>
+      <button
+        class="icon-btn"
+        :class="{ active: showMarkers }"
+        title="标注（地标 / 路线 / 区域）"
+        @click="showMarkers = !showMarkers"
+      >
+        📍
+      </button>
       <button class="icon-btn" :class="{ active: showSettings }" title="设置" @click="showSettings = !showSettings">
         ⚙
       </button>
@@ -687,6 +960,37 @@ onUnmounted(() => {
       @close="onUploadClose"
       @rendered="onRendered"
     />
+
+    <!-- 标注面板：图层开关 + POI 列表（点击飞过去）+ 在当前位置添加 -->
+    <div v-if="showMarkers" class="markers glass">
+      <h3>标注</h3>
+      <template v-if="markerSets.length">
+        <div v-for="set in markerSets" :key="set.id" class="marker-set">
+          <label class="toggle">
+            <span>{{ set.label }} <b>{{ set.markers.length }}</b></span>
+            <input
+              type="checkbox"
+              :checked="markerVisibility[set.id] !== false"
+              :disabled="!set.toggleable"
+              @change="toggleMarkerSet(set.id, ($event.target as HTMLInputElement).checked)"
+            />
+          </label>
+          <ul v-if="markerVisibility[set.id] !== false" class="marker-list">
+            <li
+              v-for="marker in set.markers"
+              :key="marker.id"
+              :title="`飞到「${marker.label}」`"
+              @click="flyToMarker(markerAnchor(marker))"
+            >
+              <span class="kind">{{ markerKind(marker) }}</span>{{ marker.label || marker.id }}
+            </li>
+          </ul>
+        </div>
+      </template>
+      <div v-else class="device-info">这张地图还没有标注。飞到目标位置后点下面的按钮即可添加。</div>
+      <button type="button" class="add-marker" @click="addMarkerAtCamera">📍 在当前位置添加标注</button>
+      <div v-if="markerStatus" class="device-info">{{ markerStatus }}</div>
+    </div>
 
     <!-- 设置面板 -->
     <div v-if="showSettings" class="settings glass">
@@ -734,6 +1038,42 @@ onUnmounted(() => {
         <span>视距 <b>{{ settings.distanceChunks }} 区块</b></span>
         <input v-model.number="settings.distanceChunks" type="range" min="8" max="32" step="1" />
       </label>
+      <label class="toggle">
+        <span>
+          Y 轴切片
+          <b>{{ settings.ySliceEnabled ? `${settings.ySliceMin} ~ ${settings.ySliceMax}` : "关" }}</b>
+        </span>
+        <input v-model="settings.ySliceEnabled" type="checkbox" />
+      </label>
+      <template v-if="settings.ySliceEnabled">
+        <label>
+          <span>切片下限 Y <b>{{ settings.ySliceMin }}</b></span>
+          <input
+            v-model.number="settings.ySliceMin"
+            type="range"
+            :min="sliceBounds.min"
+            :max="settings.ySliceMax - 1"
+            step="1"
+          />
+        </label>
+        <label>
+          <span>切片上限 Y <b>{{ settings.ySliceMax }}</b></span>
+          <input
+            v-model.number="settings.ySliceMax"
+            type="range"
+            :min="settings.ySliceMin + 1"
+            :max="sliceBounds.max"
+            step="1"
+          />
+        </label>
+        <div class="slice-presets">
+          <button type="button" @click="applySlicePreset('above')">相机以上</button>
+          <button type="button" @click="applySlicePreset('below')">相机以下</button>
+          <button type="button" @click="applySlicePreset('band')">当前层 ±64</button>
+          <button type="button" @click="applySlicePreset('all')">整图</button>
+        </div>
+        <div class="device-info">被裁掉的高度不渲染，也不参与第一人称碰撞</div>
+      </template>
       <div v-if="deviceProfile" class="device-info">
         设备档位 {{ { high: "高", mid: "中", low: "低" }[deviceProfile.tier] }} ·
         {{ deviceProfile.cores }} 核 · {{ deviceProfile.memoryGb }}GB
@@ -973,6 +1313,120 @@ body,
   margin-top: -4px;
   font-size: 11.5px;
   color: #8b93a3;
+}
+
+/* Y 轴切片预设：四个等宽按钮，与面板里的滑杆同一视觉语言 */
+/* 标注面板：与设置面板同款玻璃卡片，放在设置面板左侧避免叠在一起 */
+.markers {
+  position: absolute;
+  top: 64px;
+  right: 264px;
+  width: 232px;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.markers h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #8b93a3;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.markers .marker-set {
+  margin-bottom: 10px;
+}
+
+.markers label.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #aab3c2;
+  margin-bottom: 4px;
+}
+
+.markers label.toggle b {
+  color: #6d7686;
+  font-weight: 600;
+}
+
+.markers label.toggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #2f6fd0;
+  cursor: pointer;
+}
+
+.markers .marker-list {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+}
+
+.markers .marker-list li {
+  padding: 3px 6px;
+  font-size: 12.5px;
+  color: #cfd6e2;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.markers .marker-list li:hover {
+  background: rgba(47, 111, 208, 0.25);
+}
+
+.markers .marker-list .kind {
+  display: inline-block;
+  width: 16px;
+  color: #6d7686;
+}
+
+.markers .add-marker {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: #cfd6e2;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.markers .add-marker:hover {
+  background: rgba(47, 111, 208, 0.28);
+  border-color: rgba(47, 111, 208, 0.5);
+}
+
+.markers .device-info {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #8b93a3;
+}
+
+.settings .slice-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: -4px 0 12px;
+}
+
+.settings .slice-presets button {
+  padding: 5px 0;
+  font-size: 12px;
+  color: #cfd6e2;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.settings .slice-presets button:hover {
+  background: rgba(47, 111, 208, 0.28);
+  border-color: rgba(47, 111, 208, 0.5);
 }
 
 /* 底部条：状态栏（左）与操作提示（右）同一个弹性行，天然不重叠；

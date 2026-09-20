@@ -1,10 +1,19 @@
 /**
  * @yudream/voxelith-viewer —— VMC three.js 渲染核心。
  *
- * 当前：清单加载 + glb 瓦片流（TileManager）+ 三模式相机（自由飞行 / 第一人称 / 俯视倾斜）。
- * 后续：LodTraverser / Y 切片 / MarkerRendererRegistry。
+ * 当前：清单加载 + glb 瓦片流（TileManager）+ 三模式相机（自由飞行 / 第一人称 / 俯视倾斜）
+ *      + Y 轴切片 + meshopt 压缩瓦片 + 标注渲染（MarkerLayer）。
  */
 export { MapEngine, supportsDisplayP3, type MapEngineOptions } from "./engine/MapEngine.js";
+export {
+  bucketIntersectsSlice,
+  currentYSlice,
+  setYSlice,
+  sliceContainsY,
+  sliceRaycastTargets,
+  YSliceUniforms,
+  type YSlice,
+} from "./engine/YSlice.js";
 export {
   AdaptiveDistance,
   decideChunks,
@@ -39,6 +48,7 @@ export {
   validateTileGroup,
   type GlbTileLoaderOptions,
 } from "./tiles/GlbTileLoader.js";
+export { MarkerLayer, canvasTextureFactory, type MarkerPickResult, type MarkerTextureFactory } from "./markers/MarkerLayer.js";
 export { FloatingOrigin } from "./engine/FloatingOrigin.js";
 export { FreeFlightControls, type FreeFlightOptions } from "./controls/FreeFlightControls.js";
 export {

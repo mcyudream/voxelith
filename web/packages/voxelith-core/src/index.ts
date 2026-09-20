@@ -26,8 +26,13 @@ export type MapSettings = z.infer<typeof mapSettingsSchema>;
 export const atlasRefSchema = z.object({
   /** 相对地图根的图集地址 */
   url: z.string().min(1),
-  /** 图集边长（像素，正方形） */
+  /** 图集宽（像素） */
   size: z.number().int().positive(),
+  /**
+   * 图集高（像素）。缺省 = 等于宽度（正方形）。
+   * 增量扩图集向下加行后高度会大于宽度：老单元格 UV 不动，新贴图落在新增的行里。
+   */
+  height: z.number().int().positive().optional(),
   /** 入集贴图数（含兜底格） */
   textureCount: z.number().int().min(1),
 });

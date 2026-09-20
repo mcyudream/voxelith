@@ -134,7 +134,10 @@ public class VertexColorTileExporter {
 
         Segment opaque = new Segment(positions, normals, uvs, colors, lights, indices);
         TileGeometry geometry = new TileGeometry(opaque, Segment.empty(), min, max);
-        EncodeOptions options = textured ? EncodeOptions.lodColormap() : encode;
+        // 有色图的 LOD 瓦片固定「线性过滤 + 内嵌色图」，但 meshopt 开关跟随调用方配置
+        EncodeOptions options = textured
+                ? EncodeOptions.lodColormap().withMeshopt(encode.meshopt())
+                : encode;
         byte[] glb = tileEncoder.encode(geometry, colormapPng, options);
         sink.writeTile(outputDir, pos, glb);
         return new TileOutcome.TileSummary(

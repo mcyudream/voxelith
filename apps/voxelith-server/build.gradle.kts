@@ -146,6 +146,48 @@ tasks.register<JavaExec>("renderMap") {
 }
 
 /**
+ * 分布式分片 worker 入口（Phase 7「分布式分片作业队列」）：从共享队列目录里抢 region 分片，
+ * 每个分片跑「读世界 → bake → tile → 局部失效清单」，产物直接写进已发布地图目录。
+ *
+ * 多个 worker（可跨机器，只要都能看见 queueDir）同时跑就是分布式渲染：
+ *   gradlew :apps:voxelith-server:shardWorker -PworldDir=... -PmapId=... -Ppacks=... -PqueueDir=...
+ * 调度侧负责入队（例如服务端预留的队列模式），worker 只负责领活与回填产物路径。
+ */
+tasks.register<JavaExec>("shardWorker") {
+    group = "voxelith"
+    description = "分布式分片 worker：抢占队列里的 region 分片并增量重渲染"
+    mainClass.set("online.yudream.voxelith.server.cli.ShardWorkerCli")
+    classpath = sourceSets["main"].runtimeClasspath
+    jvmArgs("-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8")
+    providers.gradleProperty("heap").orNull?.let { maxHeapSize = it }
+
+    val cliArgs = buildList {
+        fun option(name: String, property: String) {
+            providers.gradleProperty(property).orNull?.let {
+                add("--$name")
+                add(it)
+            }
+        }
+        option("world-dir", "worldDir")
+        option("map-id", "mapId")
+        option("packs", "packs")
+        option("queue-dir", "queueDir")
+        option("publish-dir", "publishDir")
+        option("work-dir", "workDir")
+        option("models-file", "modelsFile")
+        option("dimension", "dimension")
+        option("worker-id", "workerId")
+        option("threads", "threads")
+        option("lease-minutes", "leaseMinutes")
+        option("idle-minutes", "idleMinutes")
+        if (providers.gradleProperty("noMeshopt").orNull == "true") {
+            add("--no-meshopt")
+        }
+    }
+    args(cliArgs)
+}
+
+/**
  * 后端全景渲染（服务端预渲染）：读 renderMap 产出的地表栅格 + 高度场，烘一张透视全景 PNG。
  * 不触碰任何 3D 瓦片链路——3D 效果保持不变，全景只是额外产物（弱机兜底 / 俯瞰模式）。
  *

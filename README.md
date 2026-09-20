@@ -8,7 +8,7 @@
 ![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-基于 Three.js 的 Minecraft 地图渲染核心：从存档解析到 Web 渲染的完整链路，支持 glTF 瓦片、多级 LOD 金字塔、光照烘焙与 .vxt 瓦片格式。
+基于 Three.js 的 Minecraft 地图渲染核心：从存档解析到 Web 渲染的完整链路，支持 glTF 瓦片（可选 meshopt 熵编码）、多级 LOD 金字塔、光照烘焙、标注图层与 .vxt 瓦片格式。
 
 - **组织**：Yudream
 - **主仓库**：voxelith
@@ -19,9 +19,9 @@
 
 VMC 是一个类 BlueMap 的 Minecraft Web 地图渲染系统：
 
-- **后端（Java 21 + Spring Boot 3.5）**：自动编排渲染管线 `resolve → scan → bake → tile → lod → manifest`，从存档（Anvil）/ schematic 解析世界，烘焙光照与 AO，产出 glb 瓦片金字塔与 JSON 清单。严格四层 DDD 限界上下文模块，ArchUnit 守护架构边界。
-- **前端（Vue 3 + TS + Three.js，pnpm workspace）**：瓦片流式加载、LOD 四叉树逐级切换、LRU 缓存滞回淘汰、设备分档 + 自适应视距、三模式相机（自由飞行 / 生存式第一人称（重力、碰撞、上台阶、游泳沉水）/ 俯视倾斜）、按需生成的瓦片碰撞代理、浮点原点重定基；网页里可上传存档 → 框选范围 → 后台渲染 → 直接切到新地图，并支持删除已发布地图。
-- **协议**：自定义 JSON 清单 + glb 瓦片（光照/AO 烘焙进顶点属性），像素贴图图集保持无损 + NearestFilter；标注（marker）schema 已在 `voxelith-core` 定义，渲染层待实现。
+- **后端（Java 21 + Spring Boot 3.5）**：自动编排渲染管线 `resolve → scan → bake → tile → lod → manifest`，从存档（Anvil）/ schematic 解析世界，烘焙光照与 AO，产出 glb 瓦片金字塔与 JSON 清单；支持 region 级增量重渲染（含**增量扩图集**）、可选的**分布式分片作业队列**、对象存储侧的变更轮询。严格四层 DDD 限界上下文模块，ArchUnit 守护架构边界。
+- **前端（Vue 3 + TS + Three.js，pnpm workspace）**：瓦片流式加载、LOD 四叉树逐级切换、LRU 缓存滞回淘汰、设备分档 + 自适应视距、三模式相机（自由飞行 / 生存式第一人称（重力、碰撞、上台阶、游泳沉水）/ 俯视倾斜）、按需生成的瓦片碰撞代理、**Y 轴切片**、**标注图层**（POI/折线/多边形/体块/盒子）、浮点原点重定基；网页里可上传存档 → 框选范围 → 后台渲染 → 直接切到新地图，并支持删除已发布地图。
+- **协议**：自定义 JSON 清单 + glb 瓦片（光照/AO 烘焙进顶点属性，可选 `KHR_mesh_quantization` + `EXT_meshopt_compression`），像素贴图图集保持无损 + NearestFilter（支持增量向下扩行）；标注用独立的 `markers.json`（schema 与前端 zod 逐字段对齐）。
 
 ## 特性
 
@@ -33,6 +33,12 @@ VMC 是一个类 BlueMap 的 Minecraft Web 地图渲染系统：
 - **按需碰撞代理**：瓦片加载后按需把渲染几何切成「实体 / 水面」两套不可见代理（8×8 区域 × 高度每 4 格分片、共享顶点缓冲），射线只扫穿过的 1~2 片；hires 未流式到位时退到最细可用 LOD 兜底，切模式不再悬空或穿模。
 - **色彩管理**：线性工作流 + sRGB 创作基准，可选 Display P3 广色域输出。
 - **region 增量**：监听存档 region 变化 → 防抖合并 → 按 region 重跑 bake→tile→lod → 清单局部失效，前端只对变化瓦片失效。
+- **增量扩图集**：新出现的贴图（新方块 / mod 方块）追加进已发布图集的下一个空位，格子用满才向下加行——宽度、列数、老单元格序号都不动，已发布瓦片的 UV 继续有效。
+- **Y 轴切片**：只显示（且只参与第一人称碰撞）某个高度区间内的几何，预设以相机高度为界；用于「同一张图看地下/地表/建筑层」。
+- **标注图层**：POI（图钉 + 标签，保持屏幕尺寸）、折线、XZ 多边形（可带洞）、拉伸体块、轴对齐盒子；按视距自动显隐，面板可开关图层、点列表飞到标注、在当前位置一键新增。
+- **分布式分片**：region 分片进共享队列（文件系统租约，无中间件），多进程/多机抢同一批分片；worker 崩溃后租约到期自动回收，产物路径回填后本地检查点继续续跑。
+- **对象存储变更检测**：S3/MinIO/R2 上没有 inotify，改按 `poll-seconds` 轮询 ETag 比对，变更的 region 自动镜像到本地再触发增量。
+- **几何压缩实测**：64×64 网格瓦片 BIN 从 258 856 B（float32）→ 191 256 B（量化）→ 50 228 B（量化 + meshopt 熵编码，约 1/5）；索引流约 1 字节/三角。
 - **实测规模**：西南科大全校 20769 瓦片、默认存档 7866 区块已全量渲染发布，浏览器全图 67 次 draw call。
 
 ## Monorepo 结构
@@ -50,7 +56,7 @@ voxelith/
 │   ├── tile-context/                     # 瓦片域：glb 编码（含可选量化）、图集打包、清单发布 / 局部失效
 │   ├── lod-context/                      # LOD 域：柱状高度场 LOD 金字塔聚合
 │   ├── orchestration-context/            # 编排域：管线状态机、任务分片、断点续跑、region 增量
-│   ├── marker-context/                   # 标注域：schema 已定义，渲染待实现
+│   ├── marker-context/                   # 标注域：schema / 校验 / markers.json 读写 / REST 接口
 │   ├── map-context/                      # 地图域：地图聚合、清单发布、FILE/S3 对象存储
 │   └── architecture-tests/               # ArchUnit 四层架构守护
 ├── apps/
@@ -92,7 +98,7 @@ voxelith/
 
 > 本机 8080/8081 被 WSL 的 `wslrelay.exe` 长期占用（连上去只会被直接掐断），voxelith-server 固定使用 **8090**（application.yml 默认值；前端 dev 代理同步指向 8090，可用 `MAP_SERVER_URL` 覆盖）。
 
-> 全量渲染管线（resolve→scan→bake→tile→lod→manifest）当前由 jshell 串联各限界上下文用例执行，产物落盘 `work/` 与 `data/maps/{mapId}/`；其中**采集段**已收进仓库（见下节），其余仍由 jshell 驱动。
+> 全量渲染管线已有仓库内入口：模型采集 `harvestModels`、全量渲染 `renderMap`、分布式分片 worker `shardWorker`（见下节）。产物落盘 `work/` 与 `data/maps/{mapId}/`。
 
 ### 后端：网页上传 + 可视化框选渲染
 
@@ -174,6 +180,71 @@ yudream:
 
 > bake 会优先消费 `models.json.gz`（runtime 采集的真实 BakedModel），查不到的方块才落回静态模型目录；产物缺失时记一条 warn 并纯走静态解析，不影响启动。
 
+存档放在 **S3 / MinIO / R2** 上时没有 inotify 可监听，把变更检测切成轮询：
+
+```yaml
+yudream:
+  voxelith:
+    storage:
+      type: s3                 # 发布产物也走对象存储时
+      s3: { endpoint: http://127.0.0.1:9000, bucket: voxelith, access-key: ..., secret-key: ... }
+    incremental:
+      enabled: true
+      watch-mode: object-store # local（默认，WatchService）| object-store（轮询 ETag）
+      object-prefix: region/   # 留空按维度推断 region/、DIM-1/region/、DIM1/region/
+      poll-seconds: 15
+      world-dir: <本地镜像目录>  # 变更的 region 会镜像到这里，增量渲染读本地 Anvil
+```
+
+> 首次轮询只建立基线（重启不会把整张图当成变更重跑）；停机期间的变更不补发——需要补齐时
+> 应让调度层做一次全量对账（比对清单里每个瓦片的 sha1）。
+
+### 后端：全量渲染与分布式分片（仓库内入口）
+
+```bash
+# 全量：一个窗口一次跑完 bake→tile→lod→manifest，直接发布到 ./data/maps/{mapId}
+./gradlew :apps:voxelith-server:renderMap \
+    -PworldDir=<存档> -PmapId=swust -Ppacks=<原版client.jar> \
+    -PregionX0=.. -PregionX1=.. -PregionZ0=.. -PregionZ1=.. -Pheap=8g
+# 大图分遍（内存只与单批相关）；关掉 meshopt 熵编码（默认开）
+#   -PbatchChunks=2048   -PnoMeshopt=true
+
+# 分布式：多个 worker（可跨机器）抢同一批 region 分片，各自增量重渲染
+./gradlew :apps:voxelith-server:shardWorker \
+    -PworldDir=<存档> -PmapId=swust -Ppacks=<原版client.jar> \
+    -PqueueDir=<共享队列目录> -Pthreads=4
+```
+
+> 分片队列是文件系统租约队列：领取用 `Files.createFile` 的原子独占创建，作业文件里记租约，
+> worker 崩溃后租约到期即被别的 worker 回收。多机只要挂同一个目录（NFS/SMB）就能协作；
+> 检查点、产物、清单局部失效的语义与单机增量完全一致，可以中途加入/退出。
+
+### 标注（markers.json）
+
+标注是独立图层文件，与瓦片同源：`/maps/{mapId}/markers.json`，读写接口是
+`GET/PUT/DELETE /api/maps/{mapId}/markers`（PUT 的请求体就是文件本身的结构）。
+网页工具栏的 📍 面板可以开关图层、点列表飞到标注、在当前位置一键新增 POI。
+
+```json
+{
+  "formatVersion": 1,
+  "mapId": "swust",
+  "sets": [
+    { "id": "landmarks", "label": "地标", "sorting": 10,
+      "markers": [
+        { "type": "poi", "id": "library", "label": "图书馆",
+          "position": { "x": 120, "y": 68, "z": -30 },
+          "style": { "fillColor": "#e74c3c", "icon": "📚", "depthTest": false } },
+        { "type": "shape", "id": "campus", "label": "校园", "shapeY": 64,
+          "shape": [ { "x": 0, "z": 0 }, { "x": 256, "z": 0 }, { "x": 256, "z": 256 }, { "x": 0, "z": 256 } ],
+          "style": { "fillColor": "#2f6fd0", "opacity": 0.35 } }
+      ] }
+  ]
+}
+```
+
+完整字段（五种类型 + 样式 + 视距剔除规则）见 [docs/protocol/markers-json.md](docs/protocol/markers-json.md)。
+
 ### 前端：开发调试
 
 ```bash
@@ -198,6 +269,16 @@ pnpm -r build                       # 全部包 + 应用构建
 ./gradlew build
 ```
 
+值得单独点名的测试：
+
+- `MeshoptCodecTest` / `GlbTileEncoderMeshoptTest`（后端）与 `MeshoptGolden.test.ts`（前端）——
+  后者把后端产出的金标准位流交给 three.js 自带的官方 WASM 解码器逐字节还原，
+  跨实现守住压缩格式；
+- `FileShardQueueTest` —— 两个队列实例（模拟两台机器）并发抢同一批分片，
+  断言不重复领取、租约到期可回收；
+- `MarkerApiTest` —— 标注走一遍「PUT → 落盘 → 静态文件读回 → DELETE 清空」的真实 HTTP 链路；
+- `AtlasExpanderTest` / `EnsureAtlasCapacityUseCaseTest` —— 增量扩图集必须**不动老单元格**。
+
 ## 渲染管线
 
 管线由编排域状态机自动驱动，每链路产出落盘中间产物 + 校验报告，支持分片级断点续跑：
@@ -211,6 +292,14 @@ pnpm -r build                       # 全部包 + 应用构建
 
 > 管线检查点写入 `work/`，同 runId 重跑时跳过「已完成且产物健在」的阶段/分片；世界 region 增减导致分片数变化时视为新阶段，丢弃旧分片进度。
 
+分片阶段（bake/tile/lod 的 region 分片）有两种跑法：本地顺序/并行执行，或交给**分片作业队列**
+（`ShardQueuePort`）——入队后本地 worker 池与其他进程一起抢占，检查点仍按分片记录，
+两种方式可以混用、可以中途切换。队列模式下「队列说 DONE、产物却不在盘上」的分片会先被
+`reset` 再重新入队，避免 DONE 记录永远挡住重跑。
+
+增量重跑时，如果这次用到的贴图不在已发布图集里（新方块 / mod 方块），管线会先把它们
+**追加**进图集（老单元格不动、格子用满向下加行），否则那些面会整片渲染成品红兜底格。
+
 ## 前端关键机制
 
 - **三模式相机**：自由飞行（WASD + Space/Ctrl 升降 + Shift 加速 + 滚轮调速）、第一人称（MC 生存模式式移动：重力 / 跳跃 / 撞墙停下并沿墙滑行 / ≤0.6 格自动上台阶（更高的坎要跳），步行 4.317、疾跑 5.612 格每秒；水里则重力降到 8 格/秒²、松手以 3 格/秒缓慢下沉、按住 Space 以 3.2 格/秒上浮、浮出水面时借力起跳上岸、水平速度减半；切模式即落到当前站位的表面 —— 水面优先于水底，水平位置收在地图范围内，探不到地形时原地悬停不下沉）、俯视倾斜（拖拽旋转倾斜 + 缩放）；切换模式时以当前朝向重建控制器，平滑过渡。
@@ -223,6 +312,9 @@ pnpm -r build                       # 全部包 + 应用构建
 - **加载容错**：失败瓦片按指数退避重试（1s 起、封顶 30s、默认 3 次），瞬时网络错误不再导致该瓦片本次会话永久缺失。
 - **缓存版本戳**：瓦片 URL 带自身内容哈希 `?sha=<tile.sha1>`，未变动的瓦片跨地图版本继续命中 7 天强缓存（用全图聚合 version 会让任一片变动即全量失效）。
 - **共享图集**：hires 每瓦片内嵌同一张图集 PNG，前端按清单 `atlas` 只解码一次；LOD 每层把该层全部瓦片的航拍色图拼成一张 `lod-atlas.png`（瓦片 UV 已烘焙成图集坐标），前端每层只解码一张纹理——此前 LOD 是每瓦片一张 128² PNG，2176 片即 2000+ 纹理对象与同等数量的解码。hires / LOD 由传入的 `level` 显式区分，不从纹理过滤参数反推。
+- **Y 轴切片**：片元着色器按世界 Y 丢弃（uniform 开关常驻，切换切片不触发重编译）；第一人称的射线碰撞同时按碰撞代理的 **Y 分桶**过滤，被裁掉的高度既不显示也不挡路（否则会「站在空气上」）。面板提供「相机以上 / 相机以下 / 当前层 ±64 / 整图」预设，以相机高度为界（不写死 y=63 海平面）。
+- **标注图层**：`markers.json` 里的五类标注各由一套几何生成；POI 用 Sprite + Canvas 标签并随视距缩放保持屏幕尺寸，`minDistance`/`maxDistance` 每帧做显隐剔除，`depthTest:false` 用于穿透地形；标注挂在场景根下，跟瓦片一起被浮点原点重定基，坐标写世界坐标即可。
+- **meshopt 压缩瓦片**：glb 的 POSITION/NORMAL/TEXCOORD_0 与索引用 `EXT_meshopt_compression` 位流，前端由 three.js 自带 WASM 解码器还原；未压缩瓦片与压缩瓦片可以在同一张图里共存（增量发布不必整图重渲）。
 - **浮点原点**：超远坐标（边疆量级）自动重定基，场景 / 相机 / 控制器目标同步平移，防 float32 精度撕裂。
 
 ## 路线图
@@ -235,17 +327,32 @@ pnpm -r build                       # 全部包 + 应用构建
 | Phase 3 | LOD 金字塔 + 前端四叉树逐级切换 / LRU 缓存 | ✅ 已完成 |
 | Phase 4 | 全版本兼容（版本适配 SPI、1.13–1.17 调色板 + 1.12 flattening 映射、多版本回归测试） | ✅ 已完成 |
 | Phase 5 | Headless mod 运行时（进程隔离、LWJGL stub、BakedModel 全量采集导出 models.json.gz + 静态解析降级兜底 + bake 链路优先消费采集产物） | ✅ 已完成（采集有仓库内入口 `harvestModels`，mod jar 走 `-Pmods`） |
-| Phase 6 | 规模化与增量：管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选量化 + 增量 bake→tile→lod + 图集复用 + 高度场合并 | ✅ 已完成（meshopt 熵编码见 Phase 7；十万级全量烘焙仍走 jshell） |
-| Phase 7 | 打磨与扩展：meshopt 熵编码、Y 轴切片、标注渲染（marker 渲染器）、增量扩图集、分布式分片作业队列、S3 侧 Watch 等价物、仓库内全量管线入口 | 🚧 进行中（LOD 按层图集页、仓库内管线入口的**采集段** `harvestModels` 已落地；其余待做） |
+| Phase 6 | 规模化与增量：管线状态机 + 断点续跑 + region 分片 + WatchService 增量 + FILE/S3 SPI + 可选量化 + 增量 bake→tile→lod + 图集复用 + 高度场合并 | ✅ 已完成 |
+| Phase 7 | 打磨与扩展：meshopt 熵编码、Y 轴切片、标注渲染（marker 渲染器）、增量扩图集、分布式分片作业队列、S3 侧 Watch 等价物、仓库内全量管线入口 | ✅ 已完成 |
+
+Phase 7 的落地形态（逐条对照）：
+
+| 条目 | 实现 | 入口 / 验证 |
+|---|---|---|
+| meshopt 熵编码 | `EXT_meshopt_compression` 线格式的**纯 Java 编解码移植**（顶点 v0 + 索引 v1），glb 里带 gltfpack 同形的占位回退缓冲；前端 `GlbTileLoader` 挂官方 WASM 解码器 | `EncodeOptions.meshopt()`；`renderMap` 默认开、`-PnoMeshopt=true` 关；后端 `MeshoptCodecTest` + 前端 `MeshoptGolden.test.ts`（金标准位流 → 官方解码器逐字节还原） |
+| Y 轴切片 | 片元丢弃（uniform 开关，切换不重编译）+ 碰撞代理按 Y 分桶过滤 | 设置面板「Y 轴切片」（含「相机以上 / 以下 / 当前层 ±64 / 整图」预设）；`YSlice.test.ts` |
+| 标注渲染 | 五种标注（POI 图钉+标签 / 折线 / 多边形含洞 / 拉伸体 / 盒子）的渲染层 + `markers.json` 协议 + REST 读写 + 图层面板 | `MarkerLayer`；`GET/PUT/DELETE /api/maps/{id}/markers`；`MarkerLayer.test.ts` + `MarkerJsonRoundTripTest` + `MarkerApiTest` |
+| 增量扩图集 | 新贴图追加到空位，格子用满向下加行（宽/列/老单元格序号不变）；布局与清单增加 `height` | `EnsureAtlasCapacityUseCase`、`AtlasExpander`；`AtlasExpanderTest` + `EnsureAtlasCapacityUseCaseTest` |
+| 分布式分片作业队列 | `ShardQueuePort` + 文件系统租约队列（原子独占创建 + 租约回收）+ worker 池 + 管线队列模式 | `gradlew :apps:voxelith-server:shardWorker`；`FileShardQueueTest`（两实例并发抢片）+ `RunPipelineQueueTest` |
+| S3 侧 Watch 等价物 | `RegionObjectSource` 端口 + 轮询 ETag 比对 + 变更镜像回本地 | `incremental.watch-mode=object-store`；`PollingRegionWatchTest` + `S3SignerTest`；ADR 0006 |
+| 仓库内全量管线入口 | `harvestModels` / `renderMap` / `shardWorker` 三个 Gradle 任务 + CLI | 见「快速开始 · 全量渲染与分布式分片」 |
 
 ## 文档
 
-- `docs/protocol/tile-glb.md` — 瓦片 glb 顶点属性 / 流体几何 / 图集 / 可选量化规范
+- `docs/protocol/tile-glb.md` — 瓦片 glb 顶点属性 / 流体几何 / 图集（含增量扩行）/ 可选量化与 meshopt 熵编码规范
+- `docs/protocol/markers-json.md` — 标注协议（五种类型 + 样式 + 视距剔除 + REST 读写）
 - `docs/protocol/models-json.md` — runtime 采集产物 `models.json.gz` 契约（bake 链路消费）
 - `docs/adr/0001-headless-runtime-fabric-first.md` — Headless 运行时：进程隔离 + Fabric 优先 + LWJGL stub/真实 core 混合
-- `docs/adr/0002-region-incremental-update.md` — region 增量更新（WatchService + 防抖 + 清单局部失效 + 图集复用 + 高度场合并）
+- `docs/adr/0002-region-incremental-update.md` — region 增量更新（WatchService + 防抖 + 清单局部失效 + 图集复用/扩行 + 高度场合并）
 - `docs/adr/0003-object-store-s3-spi.md` — 发布对象存储 FILE 默认 + S3 兼容 SPI（无 AWS SDK）
-- `docs/adr/0004-mesh-quantization.md` — 可选 KHR_mesh_quantization；meshopt 熵编码预留
+- `docs/adr/0004-mesh-quantization.md` — 可选 KHR_mesh_quantization + meshopt 熵编码（纯 Java 移植、顶点 v0/索引 v1、实测 1/5）
+- `docs/adr/0005-distributed-shard-queue.md` — 分布式分片作业队列：文件系统租约、原子独占创建、崩溃回收
+- `docs/adr/0006-object-store-region-watch.md` — 对象存储侧变更检测：轮询 ETag 比对 + 变更镜像回本地
 
 ## License
 

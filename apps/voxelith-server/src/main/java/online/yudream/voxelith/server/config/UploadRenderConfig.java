@@ -80,6 +80,7 @@ public class UploadRenderConfig {
             @Value("${yudream.voxelith.render.min-y:}") String minY,
             @Value("${yudream.voxelith.render.max-level:0}") int maxLevel,
             @Value("${yudream.voxelith.render.lod-atlas:true}") boolean lodAtlas,
+            @Value("${yudream.voxelith.render.meshopt:true}") boolean meshopt,
             @Value("${yudream.voxelith.render.max-chunks:0}") int maxChunks,
             @Value("${yudream.voxelith.render.batch-chunks:2048}") int batchChunks,
             @Value("${yudream.voxelith.render.heap:}") String renderHeap) {
@@ -87,7 +88,7 @@ public class UploadRenderConfig {
         // 服务端不该替用户猜；前端会按预览算出的地表高度给出建议默认值
         return new RenderJobService(worldStore, renderInputs, Path.of(publishDir),
                 minY == null || minY.isBlank() ? BakeCommand.NO_MIN_Y : Integer.parseInt(minY.trim()),
-                maxLevel, lodAtlas, maxChunks, batchChunks, heapBytes(renderHeap));
+                maxLevel, lodAtlas, meshopt, maxChunks, batchChunks, heapBytes(renderHeap));
     }
 
     /**

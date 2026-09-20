@@ -78,6 +78,7 @@ public final class FileManifestStore implements ManifestStore {
         JsonObject atlas = new JsonObject();
         atlas.addProperty("url", manifest.atlas().url());
         atlas.addProperty("size", manifest.atlas().size());
+        atlas.addProperty("height", manifest.atlas().height());
         atlas.addProperty("textureCount", manifest.atlas().textureCount());
         root.add("atlas", atlas);
 
@@ -146,7 +147,8 @@ public final class FileManifestStore implements ManifestStore {
                 new MapManifest.AtlasRef(
                         atlas.get("url").getAsString(),
                         atlas.get("size").getAsInt(),
-                        atlas.get("textureCount").getAsInt()),
+                        atlas.get("textureCount").getAsInt(),
+                        atlas.has("height") ? atlas.get("height").getAsInt() : atlas.get("size").getAsInt()),
                 List.copyOf(tiles),
                 List.copyOf(lodAtlases));
     }

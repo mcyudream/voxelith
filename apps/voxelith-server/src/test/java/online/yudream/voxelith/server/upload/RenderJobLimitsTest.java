@@ -18,13 +18,13 @@ class RenderJobLimitsTest {
 
     private static RenderJobService service(int maxChunks, long heapBytes) {
         return new RenderJobService(null, null, Path.of("."),
-                BakeCommand.NO_MIN_Y, 0, true, maxChunks, 0, heapBytes);
+                BakeCommand.NO_MIN_Y, 0, true, true, maxChunks, 0, heapBytes);
     }
 
     /** 分遍渲染开着时的服务（内存只与单批相关，拒绝线改成时间/磁盘保护）。 */
     private static RenderJobService batchedService(int batchChunks, long heapBytes) {
         return new RenderJobService(null, null, Path.of("."),
-                BakeCommand.NO_MIN_Y, 0, true, 0, batchChunks, heapBytes);
+                BakeCommand.NO_MIN_Y, 0, true, true, 0, batchChunks, heapBytes);
     }
 
     @Test
@@ -65,7 +65,7 @@ class RenderJobLimitsTest {
                 Path.of("A:/work/school/models.json.gz"),
                 null, null, null, null,
                 0, 0, true, 75, 0, 511, 0, 511,
-                "1.20.1", "0.16.14", false, List.of(), 4321, 0);
+                "1.20.1", "0.16.14", false, List.of(), 4321, 0, true);
 
         List<String> command = RenderProcessLauncher.command(options, 12 * GIB, "A:/cp/a.jar;A:/cp/b.jar");
 
@@ -85,7 +85,7 @@ class RenderJobLimitsTest {
                 Path.of("A:/work"), Path.of("A:/data/maps"), null,
                 null, null, null, null,
                 0, 0, true, BakeCommand.NO_MIN_Y, null, null, null, null,
-                "1.20.1", "0.16.14", false, List.of(), 0, 0);
+                "1.20.1", "0.16.14", false, List.of(), 0, 0, true);
 
         List<String> command = RenderProcessLauncher.command(options, 0, "cp");
 

@@ -109,6 +109,13 @@ export interface RenderRequest {
   lodAtlas?: boolean;
 }
 
+/** 一张地图的标注文件（结构 = 后端 markers.json，字段与 @yudream/voxelith-core 一致）。 */
+export interface MarkerFile {
+  formatVersion: number;
+  mapId: string;
+  sets: unknown[];
+}
+
 /**
  * 带 HTTP 状态码的接口错误。
  *
@@ -212,6 +219,34 @@ export function deleteUpload(id: string): Promise<{ removed: boolean }> {
 export function deleteMap(mapId: string): Promise<{ removed: boolean }> {
   return request<{ removed: boolean }>(`/api/maps/${encodeURIComponent(mapId)}`, {
     method: "DELETE",
+  });
+}
+
+/**
+ * 读一张地图的标注。
+ *
+ * 优先静态文件（与瓦片同源、可被 CDN 缓存），404 时退回 REST（后端返回空列表语义，
+ * 「没配过标注」与「标注被清空」在前端表现一致：没有标注可画）。
+ */
+export async function loadMarkers(mapId: string): Promise<MarkerFile> {
+  const base = `/maps/${encodeURIComponent(mapId)}`;
+  try {
+    const resp = await fetch(`${base}/markers.json`, { cache: "no-cache" });
+    if (resp.ok) {
+      return (await resp.json()) as MarkerFile;
+    }
+  } catch {
+    // 静态路径不可达时走接口
+  }
+  return request<MarkerFile>(`/api/maps/${encodeURIComponent(mapId)}/markers`);
+}
+
+/** 整表写回标注（标注编辑器的保存动作）。 */
+export function saveMarkers(mapId: string, sets: unknown[]): Promise<{ markers: number; sets: number }> {
+  return request(`/api/maps/${encodeURIComponent(mapId)}/markers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ formatVersion: 1, mapId, sets }),
   });
 }
 

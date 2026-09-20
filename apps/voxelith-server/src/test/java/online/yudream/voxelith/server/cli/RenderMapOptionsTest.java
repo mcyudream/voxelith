@@ -33,7 +33,7 @@ class RenderMapOptionsTest {
                 -1137, -345, 131, 1318,
                 "1.20.4", "0.16.9", true,
                 List.of(Path.of("A:/repo/worker"), Path.of("A:/repo/gson.jar")),
-                4000, 2048);
+                4000, 2048, false);
 
         RenderMapOptions parsed = RenderMapOptions.parse(options.toArgs().toArray(String[]::new));
 
@@ -57,7 +57,7 @@ class RenderMapOptionsTest {
                 0, 511, -512, -1,
                 "1.21.1", "0.16.14", false,
                 List.of(),
-                2000, 0);
+                2000, 0, true);
 
         RenderMapOptions parsed = RenderMapOptions.parse(options.toArgs().toArray(String[]::new));
 

@@ -6,6 +6,7 @@ import online.yudream.voxelith.bake.infrastructure.artifact.FileBakeArtifactSink
 import online.yudream.voxelith.bake.infrastructure.prebaked.NdjsonPrebakedQuadSource;
 import online.yudream.voxelith.lod.application.GenerateLodPyramidUseCase;
 import online.yudream.voxelith.lod.infrastructure.heightfield.FileHeightfieldStore;
+import online.yudream.voxelith.maps.domain.ObjectStore;
 import online.yudream.voxelith.orchestration.application.IncrementalUpdateUseCase;
 import online.yudream.voxelith.orchestration.domain.IncrementalRenderPort;
 import online.yudream.voxelith.orchestration.domain.ManifestInvalidatePort;
@@ -13,6 +14,7 @@ import online.yudream.voxelith.orchestration.domain.RegionWatchPort;
 import online.yudream.voxelith.orchestration.infrastructure.incremental.RegionIncrementalRenderAdapter;
 import online.yudream.voxelith.orchestration.infrastructure.incremental.TileManifestInvalidateAdapter;
 import online.yudream.voxelith.orchestration.infrastructure.watch.WatchServiceRegionWatch;
+import online.yudream.voxelith.orchestration.infrastructure.watch.PollingRegionWatch;
 import online.yudream.voxelith.resource.application.ResolvedResourceCatalog;
 import online.yudream.voxelith.resource.infrastructure.bootstrap.ResourceContextBootstrap;
 import online.yudream.voxelith.tile.application.GenerateTilesUseCase;
@@ -32,6 +34,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -105,6 +108,8 @@ public class IncrementalRenderConfig {
         Path mapDir = Path.of(publishDir).resolve(mapId);
         return new RegionIncrementalRenderAdapter(
                 incrementalWorld, bake, tiles, lod, publishedAtlas,
+                // 增量扩图集：新方块/mod 方块的贴图追加进已发布图集（老瓦片 UV 不动）
+                TileContextBootstrap.openAtlasExpander(Path.of(publishDir), incrementalCatalog),
                 new FileHeightfieldStore(mapDir.resolve("heightfield.bin")),
                 mapDir);
     }
@@ -152,14 +157,35 @@ public class IncrementalRenderConfig {
     @Bean
     public RegionWatchPort regionWatchPort(
             @Value("${yudream.voxelith.incremental.world-dir}") String worldDir,
-            @Value("${yudream.voxelith.incremental.dimension:minecraft:overworld}") String dimension) {
+            @Value("${yudream.voxelith.incremental.dimension:minecraft:overworld}") String dimension,
+            @Value("${yudream.voxelith.incremental.watch-mode:local}") String watchMode,
+            @Value("${yudream.voxelith.incremental.object-prefix:}") String objectPrefix,
+            @Value("${yudream.voxelith.incremental.poll-seconds:15}") long pollSeconds,
+            ObjectStore objectStore) {
         Path world = Path.of(worldDir);
         Path regionDir = "minecraft:overworld".equals(dimension)
                 ? world.resolve("region")
                 : "minecraft:the_nether".equals(dimension)
                 ? world.resolve("DIM-1").resolve("region")
                 : world.resolve("DIM1").resolve("region");
+        if ("object-store".equalsIgnoreCase(watchMode)) {
+            // 存档放在 S3/MinIO/R2 上：没有 inotify，只能「列出 + 比对 ETag」轮询，
+            // 变更的对象顺手镜像到本地 region 目录（增量渲染读的是本地 Anvil 文件）
+            String prefix = objectPrefix == null || objectPrefix.isBlank()
+                    ? regionPrefix(dimension) : objectPrefix;
+            return new PollingRegionWatch(new ObjectStoreRegionSource(objectStore), prefix, regionDir,
+                    Duration.ofSeconds(Math.max(1, pollSeconds)));
+        }
         return new WatchServiceRegionWatch(regionDir);
+    }
+
+    /** 对象存储里 region 的默认前缀：与存档目录结构一致（DIM-1/DIM1 是下界/末地）。 */
+    private static String regionPrefix(String dimension) {
+        return switch (dimension) {
+            case "minecraft:the_nether" -> "DIM-1/region/";
+            case "minecraft:the_end" -> "DIM1/region/";
+            default -> "region/";
+        };
     }
 
     @Bean(destroyMethod = "shutdownNow")

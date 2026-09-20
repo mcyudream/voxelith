@@ -16,6 +16,7 @@ import java.util.List;
  * @param packs      资源包路径（低 → 高优先级）；留空取服务端默认与自动发现
  * @param modelsFile runtime 采集产物 models.json.gz；留空自动探测
  * @param lodAtlas   是否生成 LOD 分层图集页
+ * @param meshopt    是否启用 EXT_meshopt_compression 熵编码（留空取服务端默认，默认开）
  */
 public record RenderRequest(
         String uploadId,
@@ -30,5 +31,6 @@ public record RenderRequest(
         Integer maxLevel,
         List<String> packs,
         String modelsFile,
-        Boolean lodAtlas) {
+        Boolean lodAtlas,
+        Boolean meshopt) {
 }

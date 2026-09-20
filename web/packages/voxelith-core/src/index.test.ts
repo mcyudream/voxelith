@@ -68,3 +68,27 @@ describe("parseManifest lodAtlases", () => {
     }
   });
 });
+
+describe("清单图集引用（增量扩图集）", () => {
+  it("老清单没有 height：仍可解析，前端按正方形处理", () => {
+    const manifest = parseManifest(baseManifest());
+    expect(manifest.atlas.size).toBe(16);
+    expect(manifest.atlas.height).toBeUndefined();
+  });
+
+  it("增量扩图集后高度大于宽度：height 如实透传", () => {
+    const manifest = parseManifest(baseManifest({
+      atlas: { url: "atlas.png", size: 256, height: 320, textureCount: 150 },
+    }));
+    expect(manifest.atlas.size).toBe(256);
+    expect(manifest.atlas.height).toBe(320);
+  });
+
+  it("height 非法（0 / 负数）时拒绝", () => {
+    for (const height of [0, -8]) {
+      expect(() =>
+        parseManifest(baseManifest({ atlas: { url: "atlas.png", size: 256, height, textureCount: 1 } })),
+      ).toThrow();
+    }
+  });
+});

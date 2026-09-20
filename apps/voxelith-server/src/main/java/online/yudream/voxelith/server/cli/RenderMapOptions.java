@@ -37,6 +37,9 @@ import java.util.stream.Collectors;
  * @param batchChunks   多遍渲染：窗口超过这个区块数就切成若干批，每批单独 bake→tile→lod 并共用一张
  *                      预打好的图集（0 = 不分遍）。内存只与单批大小相关，因此窗口可以任意大，
  *                      代价是时间与磁盘
+ * @param meshopt       true = 瓦片几何走 EXT_meshopt_compression 熵编码（默认开）。
+ *                      实测 64×64 网格瓦片 BIN 从 258856B 降到 50228B（约 1/5）；
+ *                      前端 GLTFLoader 已挂 meshopt 解码器，老瓦片（未压缩）仍可混着读
  */
 public record RenderMapOptions(
         Path worldDir,
@@ -64,7 +67,8 @@ public record RenderMapOptions(
         boolean skipHarvest,
         List<Path> workerClasspath,
         int maxChunks,
-        int batchChunks) {
+        int batchChunks,
+        boolean meshopt) {
 
     public static final String DEFAULT_MC_VERSION = "1.20.1";
     public static final String DEFAULT_LOADER_VERSION = "0.16.14";
@@ -94,6 +98,8 @@ public record RenderMapOptions(
               minY             最低渲染高度（含）；低于它的方块不参与网格化
               minX/maxX/minZ/maxZ  要渲染的方块范围（含端点）；与 region 窗口叠加使用
               noLodAtlas       true = 不生成 LOD 分层图集页（逐瓦片内嵌色图）
+              noMeshopt        true = 关闭 EXT_meshopt_compression 熵编码（默认开启；
+                               量化 + 熵编码可把瓦片几何压到未压缩的约 1/5）
               maxChunks        单次渲染允许的最大非空区块数（0 = 不限制）。超过就拒绝并提示缩小范围
               batchChunks      多遍渲染：超过这个区块数就分遍跑（0 = 不分遍）。内存只与单批大小相关
             """.formatted(DEFAULT_MC_VERSION, DEFAULT_LOADER_VERSION);
@@ -146,6 +152,7 @@ public record RenderMapOptions(
         List<String> workerClasspath = new ArrayList<>();
         int maxChunks = 0;
         int batchChunks = 0;
+        boolean meshopt = true;
 
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -170,6 +177,7 @@ public record RenderMapOptions(
                 case "--min-z", "-minZ" -> minZ = intValue(args, ++i, arg);
                 case "--max-z", "-maxZ" -> maxZ = intValue(args, ++i, arg);
                 case "--no-lod-atlas", "-noLodAtlas" -> lodAtlas = false;
+                case "--no-meshopt", "-noMeshopt" -> meshopt = false;
                 case "--mc-version", "-mcVersion" -> mcVersion = value(args, ++i, arg);
                 case "--loader-version", "-loaderVersion" -> loaderVersion = value(args, ++i, arg);
                 case "--skip-harvest", "-skipHarvest" -> skipHarvest = true;
@@ -201,7 +209,7 @@ public record RenderMapOptions(
                 x0, x1, z0, z1,
                 maxLevel, sampleChunks, lodAtlas, minY, minX, maxX, minZ, maxZ,
                 mcVersion, loaderVersion, skipHarvest, pathsOf(workerClasspath),
-                Math.max(0, maxChunks), Math.max(0, batchChunks));
+                Math.max(0, maxChunks), Math.max(0, batchChunks), meshopt);
     }
 
     /**
@@ -250,6 +258,9 @@ public record RenderMapOptions(
         }
         if (batchChunks > 0) {
             add(args, "--batch-chunks", Integer.toString(batchChunks));
+        }
+        if (!meshopt) {
+            args.add("--no-meshopt");
         }
         return args;
     }

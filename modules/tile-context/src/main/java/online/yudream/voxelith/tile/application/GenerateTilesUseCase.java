@@ -67,6 +67,8 @@ public class GenerateTilesUseCase {
             textureCount = layout.cellIndex().size();
             atlasSize = layout.pixelSize();
             atlasFile = sink.writeAtlas(command.outputDir(), atlasPng);
+            // 图集可能是增量扩容过的：布局文件跟着写一份，发布/续跑都按最新布局走
+            sink.writeAtlasLayout(command.outputDir(), layout);
             Unmapped unmapped = countUnmapped(layout, command.meshes());
             missingTextures = unmapped.missing();
             untexturedQuads = unmapped.untextured();
@@ -110,6 +112,25 @@ public class GenerateTilesUseCase {
      * 打包图集，并顺手记下两类「会变成品红」的面：
      * 引用了资源包里没有的贴图（多半是资源包与世界版本不匹配）、以及压根没有贴图 id 的面。
      */
+    /**
+     * 这批网格真正会用到的贴图 id（与 {@link #packAtlas} 的收集口径一致）。
+     *
+     * <p>增量扩图集要先知道「这次会用到哪些贴图」，才能把已发布图集里缺的补上；
+     * 口径必须与打包时完全一致，否则会出现「补齐了但打包时又漏掉」的错位。</p>
+     */
+    public static Set<String> usedTextures(Map<ChunkPos, BakedChunkMeshData> meshes) {
+        TreeSet<String> used = new TreeSet<>();
+        for (BakedChunkMeshData mesh : meshes.values()) {
+            for (BakedQuadData quad : mesh.quads()) {
+                String texture = quad.texture();
+                if (texture != null && !MissingTexture.ID.equals(texture)) {
+                    used.add(texture);
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableSet(used);
+    }
+
     private AtlasBuild packAtlas(Map<ChunkPos, BakedChunkMeshData> meshes) {
         TreeSet<String> used = new TreeSet<>();
         int untexturedQuads = 0;

@@ -16,4 +16,14 @@ public interface ImageCodec {
      * @param argb   像素（行主序 argb）
      */
     byte[] encodePng(int width, int height, int[] argb);
+
+    /**
+     * PNG 字节 → argb 像素（行主序）。
+     *
+     * <p>增量扩图集要读回已发布图集再向上追加新单元格，所以需要解码方向。
+     * 默认实现抛异常：只有真正支持解码的实现（{@code PngImageCodec}）才覆写。</p>
+     */
+    default int[] decodePng(byte[] png) {
+        throw new UnsupportedOperationException("该 ImageCodec 实现不支持 PNG 解码");
+    }
 }
