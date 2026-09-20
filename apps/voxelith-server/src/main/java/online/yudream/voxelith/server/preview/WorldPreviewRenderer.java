@@ -171,13 +171,13 @@ public final class WorldPreviewRenderer {
                         (BiomeLookup) (x, y, z) -> Optional.ofNullable(columnBiome.get()));
     }
 
-    /** 维度 id → 相对存档根的目录（与 scan/bake 链路一致）。 */
+    /**
+     * 维度目录：委托给 world 上下文的唯一实现，避免各链路各写一份 switch
+     * （曾经地图画那条链路就漏掉了维度，下界/末地读不到展示框）。
+     */
     public static Path dimensionDir(Path worldDir, String dimension) {
-        return switch (dimension) {
-            case "minecraft:the_nether" -> worldDir.resolve("DIM-1");
-            case "minecraft:the_end" -> worldDir.resolve("DIM1");
-            default -> worldDir;
-        };
+        return online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap
+                .dimensionDir(worldDir, dimension);
     }
 
     /**

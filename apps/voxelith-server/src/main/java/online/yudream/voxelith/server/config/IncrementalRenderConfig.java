@@ -167,11 +167,8 @@ public class IncrementalRenderConfig {
             @Value("${yudream.voxelith.incremental.poll-seconds:15}") long pollSeconds,
             ObjectStore objectStore) {
         Path world = Path.of(worldDir);
-        Path regionDir = "minecraft:overworld".equals(dimension)
-                ? world.resolve("region")
-                : "minecraft:the_nether".equals(dimension)
-                ? world.resolve("DIM-1").resolve("region")
-                : world.resolve("DIM1").resolve("region");
+        // 维度路径统一由 world 上下文给出（下界 DIM-1、末地 DIM1）
+        Path regionDir = WorldContextBootstrap.dimensionDir(world, dimension).resolve("region");
         if ("object-store".equalsIgnoreCase(watchMode)) {
             // 存档放在 S3/MinIO/R2 上：没有 inotify，只能「列出 + 比对 ETag」轮询，
             // 变更的对象顺手镜像到本地 region 目录（增量渲染读的是本地 Anvil 文件）
@@ -185,11 +182,8 @@ public class IncrementalRenderConfig {
 
     /** 对象存储里 region 的默认前缀：与存档目录结构一致（DIM-1/DIM1 是下界/末地）。 */
     private static String regionPrefix(String dimension) {
-        return switch (dimension) {
-            case "minecraft:the_nether" -> "DIM-1/region/";
-            case "minecraft:the_end" -> "DIM1/region/";
-            default -> "region/";
-        };
+        String subPath = WorldContextBootstrap.dimensionSubPath(dimension);
+        return subPath.isEmpty() ? "region/" : subPath + "/region/";
     }
 
     @Bean(destroyMethod = "shutdownNow")

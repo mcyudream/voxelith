@@ -7,6 +7,7 @@ import online.yudream.voxelith.world.domain.nbt.DoubleTag;
 import online.yudream.voxelith.world.domain.nbt.ListTag;
 import online.yudream.voxelith.world.domain.nbt.Tag;
 import online.yudream.voxelith.world.domain.world.MapArtFrame;
+import online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap;
 import online.yudream.voxelith.world.infrastructure.nbt.NbtReader;
 
 import java.io.IOException;
@@ -22,7 +23,10 @@ import java.util.Optional;
  *
  * <ul>
  *   <li><b>展示框</b>：实体。Paper 世界把它放在独立的 {@code entities/r.X.Z.mca}（与 region 同格式），
- *       原版世界则把 {@code Entities}/{@code entities} 列表放在区块 NBT 里；两种都读。</li>
+ *       原版 1.20.2 起同样如此；更早的原版把 {@code Entities}/{@code entities} 放在区块 NBT 里。
+ *       两种都读，且都按**维度目录**定位（下界 DIM-1、末地 DIM1）。</li>
+ *   <li><b>地图编号</b>：物品 NBT 有两种写法——1.20.5 起是数据组件
+ *       {@code Item.components."minecraft:map_id"}，更早是 {@code Item.tag.map}；两种都读。</li>
  *   <li><b>地图颜色</b>：{@code data/map_N.dat}（gzip NBT，{@code colors} 为 16384 字节），
  *       按原版地图调色板（62 基色 × 4 明暗档）转成 ARGB。</li>
  * </ul>
@@ -50,21 +54,48 @@ public final class AnvilMapArtReader implements MapArtReader {
     /** 展示框实体 id（普通 + 荧光）。 */
     private static final List<String> FRAME_IDS = List.of("minecraft:item_frame", "minecraft:glow_item_frame");
 
+    /** 已填地图的物品 id：任何版本里持有地图的展示框装的都是它。 */
+    private static final String FILLED_MAP_ID = "minecraft:filled_map";
+
+    /** 1.12 及更早：已填地图的物品 id 是 {@code minecraft:map}（未激活的空白地图同样是它）。 */
+    private static final String LEGACY_MAP_ID = "minecraft:map";
+
+    /** 1.20.5+ 数据组件里的地图编号键。 */
+    private static final String MAP_ID_COMPONENT = "minecraft:map_id";
+
     /** 朝向字节 → 名称（与原版 Direction 顺序一致）。 */
     private static final String[] FACINGS = {"down", "up", "north", "south", "west", "east"};
 
-    private final Path worldDir;
+    /** 存档根：{@code data/map_*.dat} 等全局数据在这里。 */
+    private final Path worldRoot;
+    /** 维度目录：{@code region/} 与 {@code entities/} 在这里（主世界 = 存档根）。 */
+    private final Path dimensionRoot;
     private final NbtReader nbt = new NbtReader();
 
+    /** 兼容构造：主世界（维度目录 = 存档根）。 */
     public AnvilMapArtReader(Path worldDir) {
-        this.worldDir = worldDir;
+        this(worldDir, worldDir);
+    }
+
+    /**
+     * @param worldRoot     存档根（含 level.dat 与 data/）
+     * @param dimensionRoot 维度目录（主世界 = worldRoot，下界 = worldRoot/DIM-1，末地 = worldRoot/DIM1）
+     */
+    public AnvilMapArtReader(Path worldRoot, Path dimensionRoot) {
+        this.worldRoot = worldRoot;
+        this.dimensionRoot = dimensionRoot;
+    }
+
+    /** 组合根入口：按维度 id 自动定位维度目录（下界/末地的地图画也能读到）。 */
+    public static AnvilMapArtReader of(Path worldRoot, String dimension) {
+        return new AnvilMapArtReader(worldRoot, WorldContextBootstrap.dimensionDir(worldRoot, dimension));
     }
 
     @Override
     public List<MapArtFrame> frames(RegionPos region) {
         List<MapArtFrame> frames = new ArrayList<>();
         // Paper：实体单独存
-        Path entitiesFile = worldDir.resolve("entities")
+        Path entitiesFile = dimensionRoot.resolve("entities")
                 .resolve("r." + region.x() + "." + region.z() + ".mca");
         readFrames(entitiesFile, frames, true);
         // 原版：实体在区块 NBT 的 entities 列表里
@@ -73,7 +104,7 @@ public final class AnvilMapArtReader implements MapArtReader {
     }
 
     private Path regionFile(RegionPos region) {
-        return worldDir.resolve("region").resolve("r." + region.x() + "." + region.z() + ".mca");
+        return dimensionRoot.resolve("region").resolve("r." + region.x() + "." + region.z() + ".mca");
     }
 
     private void readFrames(Path file, List<MapArtFrame> out, boolean paperEntitiesFile) {
@@ -136,17 +167,44 @@ public final class AnvilMapArtReader implements MapArtReader {
         return Optional.of(new MapArtFrame(x, y, z, name, mapId));
     }
 
-    /** 从物品 NBT 里取地图编号：{@code Item.tag.map}。 */
+    /**
+     * 从物品 NBT 里取地图编号，兼容两种写法：
+     * <ul>
+     *   <li><b>1.20.5+</b>：{@code Item.components."minecraft:map_id"}（数据组件）</li>
+     *   <li><b>更早</b>：{@code Item.tag.map}</li>
+     * </ul>
+     *
+     * <p>同时还要求物品确实是「已填地图」：{@code minecraft:filled_map} 一律接受；
+     * {@code minecraft:map}（1.12 及更早的已填地图，也是所有版本的空白地图）只在
+     * **确实带地图编号**时才接受——否则未激活的空白地图会被当成地图画渲染成一块黑。</p>
+     */
     private static Integer mapIdOf(CompoundTag item) {
-        if (!item.contains("tag")) {
+        String itemId = item.contains("id") ? item.getString("id") : "";
+        Integer mapId = null;
+        // 1.20.5+：Item.components["minecraft:map_id"]
+        if (item.contains("components")) {
+            CompoundTag components = item.getCompound("components");
+            if (components.contains(MAP_ID_COMPONENT)) {
+                int id = components.getInt(MAP_ID_COMPONENT);
+                mapId = id >= 0 ? id : null;
+            }
+        }
+        // 更早：Item.tag.map
+        if (mapId == null && item.contains("tag")) {
+            CompoundTag tag = item.getCompound("tag");
+            if (tag.contains("map")) {
+                int id = tag.getInt("map");
+                mapId = id >= 0 ? id : null;
+            }
+        }
+        if (mapId == null) {
             return null;
         }
-        CompoundTag tag = item.getCompound("tag");
-        if (!tag.contains("map")) {
+        if (!FILLED_MAP_ID.equals(itemId) && !LEGACY_MAP_ID.equals(itemId)) {
+            // 展示框里放的是别的东西（画、告示牌…），即使带 map 组件也不是地图画
             return null;
         }
-        int id = tag.getInt("map");
-        return id >= 0 ? id : null;
+        return mapId;
     }
 
     private static double doubleOf(Tag tag) {
@@ -155,7 +213,8 @@ public final class AnvilMapArtReader implements MapArtReader {
 
     @Override
     public Optional<int[]> mapColors(int mapId) {
-        Path file = worldDir.resolve("data").resolve("map_" + mapId + ".dat");
+        // 地图颜色是全局数据：始终在存档根下，与维度无关
+        Path file = worldRoot.resolve("data").resolve("map_" + mapId + ".dat");
         if (!Files.isRegularFile(file)) {
             return Optional.empty();
         }

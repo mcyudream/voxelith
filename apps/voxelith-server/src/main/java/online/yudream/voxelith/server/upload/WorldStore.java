@@ -7,6 +7,7 @@ import online.yudream.voxelith.world.domain.nbt.CompoundTag;
 import online.yudream.voxelith.world.domain.world.LevelInfo;
 import online.yudream.voxelith.world.domain.world.WorldReader;
 import online.yudream.voxelith.world.infrastructure.anvil.AnvilWorldReader;
+import online.yudream.voxelith.world.infrastructure.bootstrap.WorldContextBootstrap;
 import online.yudream.voxelith.world.infrastructure.nbt.NbtReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,11 +78,21 @@ public class WorldStore {
             "region", "entities", "poi", "playerdata", "data", "advancements", "stats",
             "logs", "crash-reports", "datapacks", "DIM-1", "DIM1", ".git");
 
-    /** 维度 id → 相对存档根的 region 目录。 */
+    /**
+     * 维度 id → 相对存档根的 region 目录。
+     *
+     * <p>目录名来自 world 上下文的唯一映射（{@link WorldContextBootstrap#dimensionSubPath}），
+     * 这里只负责拼 {@code /region} 与展示用的分隔符，避免又出第三份 switch。</p>
+     */
     private static final List<String[]> DIMENSION_REGION_DIRS = List.of(
-            new String[]{"minecraft:overworld", "region"},
-            new String[]{"minecraft:the_nether", "DIM-1/region"},
-            new String[]{"minecraft:the_end", "DIM1/region"});
+            new String[]{"minecraft:overworld", regionDirOf("minecraft:overworld")},
+            new String[]{"minecraft:the_nether", regionDirOf("minecraft:the_nether")},
+            new String[]{"minecraft:the_end", regionDirOf("minecraft:the_end")});
+
+    private static String regionDirOf(String dimension) {
+        String subPath = WorldContextBootstrap.dimensionSubPath(dimension);
+        return subPath.isEmpty() ? "region" : subPath + "/region";
+    }
 
     private final Path uploadDir;
     private final ObjectMapper objectMapper;

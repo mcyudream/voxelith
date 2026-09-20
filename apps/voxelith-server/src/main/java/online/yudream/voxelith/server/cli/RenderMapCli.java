@@ -103,6 +103,12 @@ public final class RenderMapCli {
             return 1;
         }
 
+        // 版本体检放在最前面：紫块/空洞最常见的成因就是「资源包与存档不是一个版本」，
+        // 而它只有跑到后半段的缺贴图报告里才看得出来，容易被忽略
+        for (String warning : versionWarnings(options)) {
+            out.println(warning);
+        }
+
         List<int[]> regionWindow = regionWindow(options, regionDir);
         if (regionWindow.isEmpty()) {
             err.println("框选范围内没有 region 文件（存档目录: " + regionDir + "）："
@@ -327,7 +333,8 @@ public final class RenderMapCli {
     private static MeshesAndMapArt injectMapArt(RenderMapOptions options, List<int[]> regionWindow,
                                                Map<ChunkPos, BakedChunkMeshData> meshes,
                                                MapArtInjector mapArt, PrintStream out) {
-        AnvilMapArtReader reader = new AnvilMapArtReader(options.worldDir());
+        // 按维度定位：下界/末地的展示框在 DIM-1/DIM1 下，地图颜色仍在存档根的 data/
+        AnvilMapArtReader reader = AnvilMapArtReader.of(options.worldDir(), options.dimension());
         List<MapArtFrame> frames = new ArrayList<>();
         Set<Integer> mapIds = new LinkedHashSet<>();
         for (int[] region : regionWindow) {
@@ -351,11 +358,92 @@ public final class RenderMapCli {
     }
 
     private static Path regionDir(RenderMapOptions options) {
-        return switch (options.dimension()) {
-            case "minecraft:the_nether" -> options.worldDir().resolve("DIM-1").resolve("region");
-            case "minecraft:the_end" -> options.worldDir().resolve("DIM1").resolve("region");
-            default -> options.worldDir().resolve("region");
-        };
+        return WorldContextBootstrap.dimensionDir(options.worldDir(), options.dimension())
+                .resolve("region");
+    }
+
+    /**
+     * 版本体检：存档版本 vs 采集用的 {@code mc-version} vs 资源包 jar 文件名里的版本。
+     *
+     * <p>为什么值得在**管线开头**就说：贴图名跟着版本走（1.20.3 起 {@code grass} →
+     * {@code short_grass}），拿旧版 client jar 解析新版世界，草地会整片品红、新方块会缺几何；
+     * 现在只有跑到 tile 阶段后的「缺贴图」清单能看出来，很多人扫一眼就过去了。</p>
+     *
+     * <p>纯函数（不读盘），便于单测：读 level.dat 的部分在
+     * {@link #versionWarnings(RenderMapOptions)} 里做，读不到就静默跳过。</p>
+     *
+     * @param worldVersion  存档版本名（未知传 "unknown"）
+     * @param harvestVersion 采集用版本（{@code -PmcVersion}）
+     * @param packNames     资源包 jar 文件名
+     */
+    static List<String> versionWarnings(String worldVersion, String harvestVersion,
+                                        List<String> packNames) {
+        List<String> warnings = new ArrayList<>();
+        boolean worldKnown = worldVersion != null && !worldVersion.isBlank()
+                && !"unknown".equalsIgnoreCase(worldVersion);
+        if (worldKnown && harvestVersion != null && !harvestVersion.isBlank()
+                && !worldVersion.equals(harvestVersion)) {
+            warnings.add(warnBlock("采集版本与存档版本不一致",
+                    "存档是 " + worldVersion + "，而采集（models.json.gz）用的是 " + harvestVersion,
+                    "把 -PmcVersion=" + worldVersion + "（网页渲染改 render.mc-version）与对应版本的"
+                            + " client jar 一起用，并删掉 work/models.json.gz 重新采集"));
+        }
+        if (worldKnown) {
+            List<String> mismatched = new ArrayList<>();
+            for (String name : packNames) {
+                String version = versionOf(name);
+                if (version != null && !version.equals(worldVersion)) {
+                    mismatched.add(name + "（" + version + "）");
+                }
+            }
+            if (!mismatched.isEmpty()) {
+                warnings.add(warnBlock("资源包版本与存档版本不一致",
+                        "存档是 " + worldVersion + "，资源包里却看到 " + String.join("、", mismatched),
+                        "换成与存档同版本的 client jar（贴图名会随版本改名，不一致就会出现品红方块）"));
+            }
+        } else if (harvestVersion != null && !harvestVersion.isBlank()) {
+            // 读不到存档版本（非标准存档等）时的退路：至少能比对「采集版本 vs 资源包版本」，
+            // 这两者不一致同样会让贴图/模型对不上
+            List<String> mismatched = new ArrayList<>();
+            for (String name : packNames) {
+                String version = versionOf(name);
+                if (version != null && !version.equals(harvestVersion)) {
+                    mismatched.add(name + "（" + version + "）");
+                }
+            }
+            if (!mismatched.isEmpty()) {
+                warnings.add(warnBlock("资源包版本与采集版本不一致",
+                        "采集用的是 " + harvestVersion + "，资源包里却看到 " + String.join("、", mismatched),
+                        "两者用同一版本，否则烘焙出的模型与贴图会对不上"));
+            }
+        }
+        return List.copyOf(warnings);
+    }
+
+    /** 打印成醒目的多行块，避免混在常规日志里被忽略。 */
+    private static String warnBlock(String title, String detail, String fix) {
+        return "\n!!! 警告：" + title + "\n"
+                + "    " + detail + "\n"
+                + "    后果：贴图缺失的方块会渲染成品红色兜底；模型对应不上的方块会变成空洞。\n"
+                + "    处理：" + fix + "\n";
+    }
+
+    /** 从 jar 文件名里抽出 MC 版本号（{@code client-1.21.1.jar} → {@code 1.21.1}），抽不到返回 null。 */
+    static String versionOf(String fileName) {
+        Matcher matcher = Pattern.compile("(1\\.\\d+(?:\\.\\d+)?)").matcher(fileName);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    /** 读 level.dat 拿存档版本；读不到（不是标准存档/权限问题）就不产告警，绝不因此中断渲染。 */
+    private static List<String> versionWarnings(RenderMapOptions options) {
+        String worldVersion;
+        try {
+            worldVersion = WorldContextBootstrap.readLevelInfo(options.worldDir()).versionName();
+        } catch (RuntimeException e) {
+            return List.of();
+        }
+        List<String> packNames = options.packs().stream().map(Path::getFileName).map(Path::toString).toList();
+        return versionWarnings(worldVersion, options.mcVersion(), packNames);
     }
 
     /**
@@ -681,7 +769,7 @@ public final class RenderMapCli {
     /** 预读窗口内全部地图画：贴图并进共享图集，帧留给各批注入。 */
     private static List<MapArtFrame> readMapArt(RenderMapOptions options, MapArtInjector mapArt,
                                                 List<int[]> regionWindow, PrintStream out) {
-        AnvilMapArtReader reader = new AnvilMapArtReader(options.worldDir());
+        AnvilMapArtReader reader = AnvilMapArtReader.of(options.worldDir(), options.dimension());
         List<MapArtFrame> frames = new ArrayList<>();
         Set<Integer> mapIds = new LinkedHashSet<>();
         for (int[] region : regionWindow) {
