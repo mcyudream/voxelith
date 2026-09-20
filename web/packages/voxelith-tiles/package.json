@@ -1,0 +1,23 @@
+{
+  "name": "@yudream/voxelith-tiles",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "VMC 瓦片格式工具链：.vxt 单文件瓦片容器（glb + 元数据 + 校验）与 OGC 3D Tiles 1.1 互操作",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@yudream/voxelith-core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

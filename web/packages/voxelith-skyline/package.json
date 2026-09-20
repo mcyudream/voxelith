@@ -1,0 +1,25 @@
+{
+  "name": "@yudream/voxelith-skyline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "VMC 远景增强：天际线平面 LOD（图集页贴图）+ 远景雾化 + 层带滞回策略",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@yudream/voxelith-core": "workspace:*",
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.179.0",
+    "typescript": "~5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

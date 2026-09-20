@@ -365,6 +365,17 @@ export class TileManager {
     return this.detailDistance;
   }
 
+  /**
+   * 各层 LOD 图集页纹理（level → texture）。
+   *
+   * 暴露给远景增强（`@yudream/voxelith-skyline`）：天际线平面地毯直接用这些页贴图，
+   * 才能不为远处瓦片再下载/解析 glb。所有权仍在本管理器（换图时统一释放），
+   * 调用方**不要** dispose 这些纹理。
+   */
+  lodAtlasTextures(): ReadonlyMap<number, THREE.Texture> {
+    return this.lodAtlases;
+  }
+
   /** 相机到瓦片包围盒的水平（XZ）距离（盒内为 0），高度差不计入细节视距。 */
   private horizontalBoxDistance(tile: ManifestTile): number {
     const px = this.viewPosition.x;

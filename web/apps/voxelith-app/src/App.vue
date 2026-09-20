@@ -28,6 +28,7 @@ import {
   type Marker,
   type MarkerSet,
 } from "@yudream/voxelith-core";
+import { SkylineHaze, SkylineLayer } from "@yudream/voxelith-skyline";
 import * as THREE from "three";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { deleteMap, loadMarkers, saveMarkers } from "./api";
@@ -104,6 +105,11 @@ const settings = reactive({
   ySliceEnabled: false,
   ySliceMin: -64,
   ySliceMax: 320,
+  /**
+   * 远景天际线（实验，默认关）：用地平线平面地毯代替远处的粗层瓦片，
+   * 关掉即完全不影响现有渲染（见 @yudream/voxelith-skyline）。
+   */
+  skyline: localStorage.getItem("yudream.skyline") === "1",
 });
 
 /** 设备性能分档（引擎创建后探测，含 localStorage 缓存） */
@@ -119,6 +125,8 @@ let controls: CameraControls | null = null;
 let tileManager: TileManager | null = null;
 let adaptive: AdaptiveDistance | null = null;
 let markerLayer: MarkerLayer | null = null;
+let skylineLayer: SkylineLayer | null = null;
+let skylineHaze: SkylineHaze | null = null;
 /** 浮点原点：常规坐标（±2^24 内）下不触发；边疆量级自动重定基防 float32 精度撕裂 */
 const floatingOrigin = new FloatingOrigin();
 let posTimer = 0;
@@ -241,6 +249,58 @@ function clampToMapBounds(position: THREE.Vector3): void {
     m.boundsMin[2] - origin.z + FIRST_PERSON_EDGE_MARGIN,
     m.boundsMax[2] - origin.z - FIRST_PERSON_EDGE_MARGIN,
   );
+}
+
+// ---------------------------------------------------------------------------
+// 远景天际线（@yudream/voxelith-skyline，实验开关，默认关）
+// ---------------------------------------------------------------------------
+
+/** 远景最大距离：地图对角线长度的 2 倍，保证整张图都能被「地毯」覆盖到。 */
+function skylineFarDistance(): number {
+  const m = manifest.value;
+  if (!m) {
+    return 4096;
+  }
+  const dx = m.boundsMax[0] - m.boundsMin[0];
+  const dz = m.boundsMax[2] - m.boundsMin[2];
+  return Math.max(1024, Math.hypot(dx, dz) * 2);
+}
+
+/**
+ * 应用天际线设置（换图、切开关、改视距时调用）。
+ *
+ * 关闭时把图层与雾一起拆掉并把场景雾还原，所以这个开关是「零残留」的：
+ * 关掉之后渲染结果与没有这个功能时完全一致。
+ */
+function applySkyline(): void {
+  skylineLayer?.dispose();
+  skylineLayer = null;
+  if (skylineHaze) {
+    skylineHaze.dispose();
+    skylineHaze = null;
+  }
+  const m = manifest.value;
+  if (!settings.skyline || !engine || !m || !tileManager) {
+    return;
+  }
+  const farDistance = skylineFarDistance();
+  skylineLayer = new SkylineLayer({
+    manifest: m,
+    atlasTextures: tileManager.lodAtlasTextures(),
+    detailDistance: tileManager.detailDistanceBlocks,
+    farDistance,
+    // 远景存在感压低一点：它只是地平线的底，不该盖过真实几何
+    opacity: 0.85,
+  });
+  engine.scene.add(skylineLayer.object3d);
+  // 雾从细节视距开始、到最远距离结束，让地毯接缝与地图外缘连续淡出
+  skylineHaze = new SkylineHaze({
+    color: new THREE.Color(0x87ceeb).getHex(),
+    near: tileManager.detailDistanceBlocks,
+    far: farDistance,
+  });
+  skylineHaze.apply(engine.scene);
+  skylineLayer.update(engine.camera);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +504,11 @@ async function openMap(mapId: string): Promise<void> {
   status.value = "loading";
   loadedTiles.value = 0;
   failedTiles.value = 0;
+  // 天际线图层持有上一张图的清单与图集页纹理，换图前先拆掉（新图层等 TileManager 就绪后再建）
+  skylineLayer?.dispose();
+  skylineLayer = null;
+  skylineHaze?.dispose();
+  skylineHaze = null;
   tileManager?.dispose();
   tileManager = null;
   // 场景与相机随即按世界坐标重建，渲染原点归零
@@ -502,6 +567,8 @@ async function openMap(mapId: string): Promise<void> {
     });
     adaptive.setEnabled(settings.autoDistance);
     currentDistance.value = Math.round(adaptive.chunks);
+    // TileManager 就绪后再建天际线图层：它要用该图的 LOD 图集页纹理与细节视距
+    applySkyline();
     status.value = "ready";
     const url = new URL(window.location.href);
     url.searchParams.set("map", mapId);
@@ -762,6 +829,14 @@ watch(
   () => [settings.ySliceEnabled, settings.ySliceMin, settings.ySliceMax],
   () => applyYSliceSettings(),
 );
+
+watch(
+  () => settings.skyline,
+  (v) => {
+    localStorage.setItem("yudream.skyline", v ? "1" : "0");
+    applySkyline();
+  },
+);
 watch(
   () => settings.displayP3,
   (v) => {
@@ -803,6 +878,7 @@ onMounted(async () => {
     get controls() { return controls; },
     get adaptive() { return adaptive; },
     get markerLayer() { return markerLayer; },
+    get skylineLayer() { return skylineLayer; },
     deviceProfile,
     // 烘焙光照全局参数（天空光/方块光/AO 强度，调 value 即时生效）
     lighting: LightingUniforms,
@@ -844,6 +920,8 @@ onMounted(async () => {
   engine.addFrameHook((dt) => controls?.update(dt));
   // 标注：距离剔除与 POI 屏幕尺寸（切图/换图不影响，内容由 refreshMarkers 决定）
   engine.addFrameHook(() => markerLayer?.update(engine!.camera));
+  // 远景天际线：按相机位置切换层带（关闭时为 null，零开销）
+  engine.addFrameHook(() => skylineLayer?.update(engine!.camera));
   engine.addFrameHook(() => {
     // 先重定基再调度瓦片：相机/场景平移后，目标点与瓦片逻辑同步对齐到世界坐标
     const delta = engine && floatingOrigin.maybeRebase(engine.camera, engine.scene);
@@ -887,6 +965,12 @@ onUnmounted(() => {
   window.clearTimeout(mapSyncTimer);
   document.removeEventListener("visibilitychange", onVisibilityChange);
   adaptive = null;
+  skylineLayer?.dispose();
+  skylineLayer = null;
+  skylineHaze?.dispose();
+  skylineHaze = null;
+  markerLayer?.dispose();
+  markerLayer = null;
   tileManager?.dispose();
   controls?.dispose();
   engine?.dispose();
@@ -1045,6 +1129,16 @@ onUnmounted(() => {
         </span>
         <input v-model="settings.ySliceEnabled" type="checkbox" />
       </label>
+      <label class="toggle">
+        <span>
+          远景天际线（实验）
+          <b>{{ settings.skyline ? "开" : "关" }}</b>
+        </span>
+        <input v-model="settings.skyline" type="checkbox" />
+      </label>
+      <div v-if="settings.skyline" class="device-info">
+        远景用 LOD 图集页铺平面地毯（不再下载远处 glb），并从细节视距起雾化淡出
+      </div>
       <template v-if="settings.ySliceEnabled">
         <label>
           <span>切片下限 Y <b>{{ settings.ySliceMin }}</b></span>

@@ -12,6 +12,7 @@
   "dependencies": {
     "@yudream/voxelith-viewer": "workspace:*",
     "@yudream/voxelith-core": "workspace:*",
+    "@yudream/voxelith-skyline": "workspace:*",
     "pinia": "^3.0.3",
     "three": "^0.179.1",
     "vue": "^3.5.18"

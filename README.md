@@ -39,6 +39,8 @@ VMC 是一个类 BlueMap 的 Minecraft Web 地图渲染系统：
 - **分布式分片**：region 分片进共享队列（文件系统租约，无中间件），多进程/多机抢同一批分片；worker 崩溃后租约到期自动回收，产物路径回填后本地检查点继续续跑。
 - **对象存储变更检测**：S3/MinIO/R2 上没有 inotify，改按 `poll-seconds` 轮询 ETag 比对，变更的 region 自动镜像到本地再触发增量。
 - **几何压缩实测**：64×64 网格瓦片 BIN 从 258 856 B（float32）→ 191 256 B（量化）→ 50 228 B（量化 + meshopt 熵编码，约 1/5）；索引流约 1 字节/三角。
+- **产物工具链**：`voxelith-forge` CLI 能对已发布目录做审计（清单 ↔ 盘上产物交叉校验，CI 可直接用退出码）、导出 OGC 3D Tiles 1.1 `tileset.json`、打成单个 `.vxtbundle` 归档；`.vxt` 单文件瓦片自带元数据与 sha1 自检。
+- **远景增强**：`voxelith-skyline` 用 LOD 图集页直接铺「天际线平面地毯」（不再下载远处 glb），配合层带滞回与远景雾化，让地平线不抖、边缘不硬切；应用壳里有「远景天际线（实验）」开关，默认关。
 - **实测规模**：西南科大全校 20769 瓦片、默认存档 7866 区块已全量渲染发布，浏览器全图 67 次 draw call。
 
 ## Monorepo 结构
@@ -62,8 +64,11 @@ voxelith/
 ├── apps/
 │   └── voxelith-server/                  # Spring Boot 启动层 + REST / 静态瓦片 + 组合根
 ├── web/
-│   ├── packages/voxelith-core/           # → @yudream/voxelith-core
-│   ├── packages/voxelith-viewer/         # → @yudream/voxelith-viewer
+│   ├── packages/voxelith-core/           # → @yudream/voxelith-core（协议 + zod 校验）
+│   ├── packages/voxelith-tiles/          # → @yudream/voxelith-tiles（.vxt 容器 / 3D Tiles / SHA-1）
+│   ├── packages/voxelith-viewer/         # → @yudream/voxelith-viewer（Three.js 渲染核心）
+│   ├── packages/voxelith-skyline/        # → @yudream/voxelith-skyline（远景平面 LOD / 雾化）
+│   ├── packages/voxelith-forge/          # → @yudream/voxelith-forge（产物审计 / 打包 CLI）
 │   └── apps/voxelith-app/                # → @yudream/voxelith-app（私有应用壳）
 └── docs/                                 # 协议规范、ADR、产物格式说明
 ```
@@ -74,10 +79,10 @@ voxelith/
 |---|---|---|
 | `@yudream/voxelith-core` | `web/packages/voxelith-core` | 核心协议：清单 / 瓦片索引 / 标注的 TS 类型与 zod 校验（与后端 schema 对齐） |
 | `@yudream/voxelith-viewer` | `web/packages/voxelith-viewer` | 渲染核心：Three.js 瓦片流、LOD 四叉树、LRU 缓存、自适应视距、三模式相机（不依赖 Vue，可独立复用） |
+| `@yudream/voxelith-tiles` | `web/packages/voxelith-tiles` | 瓦片格式工具链：`.vxt` 单文件瓦片容器（glb + 元数据 + sha1 自检）、OGC 3D Tiles 1.1 互操作、纯 TS SHA-1 |
+| `@yudream/voxelith-skyline` | `web/packages/voxelith-skyline` | 远景增强：天际线平面 LOD（直接用 LOD 图集页贴图，不再下载远处 glb）、层带滞回策略、远景雾化 |
+| `@yudream/voxelith-forge` | `web/packages/voxelith-forge` | 管线产物工具链：审计（清单 ↔ 盘上产物交叉校验）、`.vxtbundle` 归档、3D Tiles 导出；CLI `voxelith-forge` |
 | `@yudream/voxelith-app` | `web/apps/voxelith-app` | Vue 3 应用壳（私有，不发布）：地图切换、设置面板、状态管理 |
-| `@yudream/voxelith-forge` | 规划 | 世界烘焙与瓦片产线工具链（管线产物处理 / 转换） |
-| `@yudream/voxelith-skyline` | 规划 | 远景 LOD / 天际线渲染增强 |
-| `@yudream/voxelith-tiles` | 规划 | .vxt 瓦片格式与 3D Tiles 互操作 |
 
 > Java 根包名为 `online.yudream.voxelith`，后端配置前缀 `yudream.voxelith.*`。
 
@@ -317,6 +322,66 @@ pnpm -r build                       # 全部包 + 应用构建
 - **meshopt 压缩瓦片**：glb 的 POSITION/NORMAL/TEXCOORD_0 与索引用 `EXT_meshopt_compression` 位流，前端由 three.js 自带 WASM 解码器还原；未压缩瓦片与压缩瓦片可以在同一张图里共存（增量发布不必整图重渲）。
 - **浮点原点**：超远坐标（边疆量级）自动重定基，场景 / 相机 / 控制器目标同步平移，防 float32 精度撕裂。
 
+## 工具链与互操作（tiles / skyline / forge）
+
+这三个包不参与渲染主链路，但把「渲染核心」补成了「能产、能查、能发、能对接别人」的完整工具链。
+
+### `@yudream/voxelith-tiles` —— 瓦片格式与 3D Tiles 互操作
+
+- **`.vxt` 单文件瓦片**：`VXT1` 容器（magic + 头部 JSON + glb payload），头部带清单条目
+  （层级/坐标/包围盒/sha1）与内容标志（meshopt / 量化 / 是否内嵌图集）。适合离线分发与冷归档：
+  拿到一个文件就知道它是什么、怎么校验、需不需要解压器。
+  ```ts
+  import { writeVxt, readVxt, verifyVxt } from "@yudream/voxelith-tiles";
+  const bytes = writeVxt(tile, glb, { meshopt: true, quantized: true });
+  const { header, glb: payload } = readVxt(bytes);
+  const check = verifyVxt(bytes);        // sha1 与字节数自检
+  ```
+- **3D Tiles 1.1**：`toTileset(manifest, { anchor: { lonDeg, latDeg }, metersPerBlock })`
+  把清单翻成 `tileset.json`（1.1 直接以 glb 为 content，无需 b3dm）：最粗 LOD 层为根、
+  逐层四叉细化，`geometricError = 瓦片边长 / sseFactor`，包围体用 `region`（经纬高，弧度/米）。
+  图不连通时自动套一个无 content 的合成根，**不丢瓦片**。`tilesetContents()` 也能反向摊平出内容列表。
+- **纯 TS SHA-1**：浏览器与 Node 都能算，用于内容指纹（与后端 `MessageDigest` 结果一致）。
+
+### `@yudream/voxelith-skyline` —— 远景 LOD / 天际线
+
+- **天际线平面 LOD**（`SkylineLayer`）：远景不再下载并解析粗层 glb，而是直接拿该层
+  `lod-atlas.png` 的槽位贴到**与瓦片同 footprint 的水平面片**上（UV 换算与后端
+  `LodAtlasPacker` 同一套规则：行主序槽位 + 半纹素内缩）。
+- **层带策略**（`skylineBands` / `planSkyline` / `levelForFarDistance`）：层级按 2 的幂分带、
+  相邻带重叠、退出带滞回；地毯默认选一层（远景带约 8 片铺满），每片面片进出地平线带也带 15% 滞回。
+- **远景雾化**（`SkylineHaze`）：`detailDistance → farDistance` 的雾带（three 内置 `Fog`，
+  连续插值、无硬边），用于让地毯接缝与地图外缘自然消失；`apply/dispose` 会保留并还原场景原有雾。
+
+应用壳已接上这个包：设置面板的 **「远景天际线（实验）」**（默认关）打开后即用地毯替换远处粗层瓦片，
+关掉时图层与雾一并拆除、场景雾还原——开关是零残留的。
+
+### `@yudream/voxelith-forge` —— 管线产物工具链（CLI）
+
+```bash
+pnpm -r build            # 产出 dist/（CLI 会被 esbuild 打成单文件）
+
+# 审计：清单 ↔ 盘上产物交叉校验（url 唯一性、sha1/字节数、glb 结构、图集与 LOD 图集页尺寸、层级）
+pnpm --filter @yudream/voxelith-forge exec node dist/cli.js audit --map-dir ./data/maps/swust
+# 统计 / 抽样看扩展（确认 meshopt、量化是否真的生效）
+pnpm --filter @yudream/voxelith-forge exec node dist/cli.js stats --map-dir ./data/maps/swust
+pnpm --filter @yudream/voxelith-forge exec node dist/cli.js ext   --map-dir ./data/maps/swust
+# 导出 3D Tiles（Cesium 等可直接加载）；打包成单个 .vxtbundle 供离线分发
+pnpm --filter @yudream/voxelith-forge exec node dist/cli.js tileset \
+    --map-dir ./data/maps/swust --out tileset.json --lon 104.06 --lat 30.67
+pnpm --filter @yudream/voxelith-forge exec node dist/cli.js pack \
+    --map-dir ./data/maps/swust --out swust.vxtbundle
+```
+
+审计的判定标准是「**能不能正确渲染**」，不是「文件在不在」：
+
+- `error`：瓦片缺失、字节数/sha1 不符、glb magic 或声明长度不对、图集尺寸与清单不符、
+  LOD 图集页尺寸 ≠ 该层网格 × slotSize（UV 会整片错位）、层级超过 `lodCount`、没有 hires 瓦片；
+- `warning`：目录名与 `mapId` 不一致、LOD 瓦片既没内嵌色图也没有该层图集页（只剩方向明暗）、
+  包围盒超过该层边长。
+
+退出码：`0` 通过、`1` 有 error（CI 可直接用）、`2` 参数错误。
+
 ## 路线图
 
 | 阶段 | 内容 | 状态 |
@@ -341,6 +406,10 @@ Phase 7 的落地形态（逐条对照）：
 | 分布式分片作业队列 | `ShardQueuePort` + 文件系统租约队列（原子独占创建 + 租约回收）+ worker 池 + 管线队列模式 | `gradlew :apps:voxelith-server:shardWorker`；`FileShardQueueTest`（两实例并发抢片）+ `RunPipelineQueueTest` |
 | S3 侧 Watch 等价物 | `RegionObjectSource` 端口 + 轮询 ETag 比对 + 变更镜像回本地 | `incremental.watch-mode=object-store`；`PollingRegionWatchTest` + `S3SignerTest`；ADR 0006 |
 | 仓库内全量管线入口 | `harvestModels` / `renderMap` / `shardWorker` 三个 Gradle 任务 + CLI | 见「快速开始 · 全量渲染与分布式分片」 |
+
+Phase 7 之外，`npm 分包`里原计划的三项也已落地（不在阶段表内，属配套工具链）：
+`@yudream/voxelith-tiles`（.vxt 容器 + 3D Tiles 1.1）、`@yudream/voxelith-skyline`
+（天际线平面 LOD + 远景雾化）、`@yudream/voxelith-forge`（产物审计 / 归档 / 导出 CLI）。
 
 ## 文档
 
