@@ -138,6 +138,11 @@ const markerBase = z.object({
 export const poiMarkerSchema = markerBase.extend({
   type: z.literal("poi"),
   position: vec3Schema,
+  /**
+   * 详情内容（可选）。**属于不可信输入**（标注文件可以由任何人写入）：
+   * 渲染时必须按纯文本处理或先做 HTML 消毒，**不要**直接 `v-html`/`innerHTML`，
+   * 否则标注文件就是一个存储型 XSS 的入口。
+   */
   detailHtml: z.string().optional(),
 });
 export const lineMarkerSchema = markerBase.extend({

@@ -9,6 +9,12 @@ public record MapManifest(int formatVersion, String mapId, String name, String v
                           Settings settings, float[] boundsMin, float[] boundsMax,
                           AtlasRef atlas, List<TileEntry> tiles, List<LodAtlasRef> lodAtlases) {
 
+    /**
+     * 清单协议版本（与前端 {@code @yudream/voxelith-core} 的 {@code MANIFEST_FORMAT_VERSION} 对齐）。
+     * 破坏性变更时两边一起递增；写清单统一用这个常量，别在调用点写字面量。
+     */
+    public static final int FORMAT_VERSION = 1;
+
     public MapManifest {
         tiles = tiles == null ? List.of() : List.copyOf(tiles);
         lodAtlases = lodAtlases == null ? List.of() : List.copyOf(lodAtlases);

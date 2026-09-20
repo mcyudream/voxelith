@@ -284,6 +284,10 @@ pnpm -r build                       # 全部包 + 应用构建
 - `MeshoptCodecTest` / `GlbTileEncoderMeshoptTest`（后端）与 `MeshoptGolden.test.ts`（前端）——
   后者把后端产出的金标准位流交给 three.js 自带的官方 WASM 解码器逐字节还原，
   跨实现守住压缩格式；
+- `GlbTileLoaderMeshopt.test.ts` —— 后端产出的**量化 + meshopt** glb（仓库内 fixture）交给真实
+  GLTFLoader 解析：五个顶点属性齐全、索引正确、量化 + `node.scale` 还原后世界坐标仍是瓦片局部包围盒；
+- `LodAtlasPackerTest`（后端）与 `lodAtlas.test.ts`（前端）—— LOD 图集槽位 UV 用**同一组字面量**
+  互为金标准，改任何一侧的公式都会有测试变红；
 - `FileShardQueueTest` —— 两个队列实例（模拟两台机器）并发抢同一批分片，
   断言不重复领取、租约到期可回收；
 - `MarkerApiTest` —— 标注走一遍「PUT → 落盘 → 静态文件读回 → DELETE 清空」的真实 HTTP 链路；

@@ -65,7 +65,8 @@ public class PublishManifestUseCase {
                     page.level(), page.url(), page.slotSize(), page.sha1()));
         }
 
-        MapManifest manifest = new MapManifest(1, mapId, name, InvalidateManifestUseCase.contentVersion(entries),
+        MapManifest manifest = new MapManifest(MapManifest.FORMAT_VERSION, mapId, name,
+                InvalidateManifestUseCase.contentVersion(entries),
                 Instant.now().toString(),
                 new MapManifest.Settings(TileMeshAssembler.HIRES_TILE_SIZE, maxLevel + 1),
                 min, max,

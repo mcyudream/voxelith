@@ -92,6 +92,30 @@ class LodAtlasPackerTest {
         assertThat(left[0]).isGreaterThan(0f);
     }
 
+    /**
+     * 跨实现金标准：同一组输入（L2、x∈[-1,1]、z∈[0,2]、slot 32、页 96×96）下，
+     * 前端 `@yudream/voxelith-skyline` 的 `lodAtlasUvRect` 必须算出**同一批数字**
+     * （见 web/packages/voxelith-skyline/src/lodAtlas.test.ts 的同名向量）。
+     *
+     * <p>天际线平面 LOD 用这份 UV 直接采图集页；两边一旦漂移，远景会整片错色，
+     * 而且脚本各测各的谁也发现不了。</p>
+     */
+    @Test
+    void uvRectMatchesFrontendGoldenVector() {
+        LodAtlasPacker packer = LodAtlasPacker.of(2, -1, 1, 0, 2);
+        assertThat(packer.slotSize()).isEqualTo(32);
+        assertThat(packer.width()).isEqualTo(96);
+        assertThat(packer.height()).isEqualTo(96);
+
+        // 槽位 (0,0)：col 0 / row 0
+        assertThat(packer.uvRect(-1, 0))
+                .containsExactly(0.5f / 96, 0.5f / 96, 31.5f / 96, 31.5f / 96);
+        // 槽位 (2,1)：col 2 / row 1
+        assertThat(packer.uvRect(1, 1))
+                .containsExactly((2 * 32 + 0.5f) / 96, (1 * 32 + 0.5f) / 96,
+                        (3 * 32 - 0.5f) / 96, (2 * 32 - 0.5f) / 96);
+    }
+
     private static int[] solid(int size, int argb) {
         int[] pixels = new int[size * size];
         java.util.Arrays.fill(pixels, argb);

@@ -50,6 +50,11 @@ describe("LOD 图集页槽位换算", () => {
     expect(levelTileBounds(manifestWithAtlas(), 0)).toBeNull();
   });
 
+  /**
+   * 跨实现金标准：这组数字与后端 `LodAtlasPackerTest.uvRectMatchesFrontendGoldenVector`
+   * 使用**同一组输入与同一批字面量**（L2、x∈[-1,1]、z∈[0,2]、slot 32、页 96×96）。
+   * 谁改了一侧的公式，另一侧的测试就会红。
+   */
   it("UV 矩形与后端 LodAtlasPacker 同一套公式（行主序 + 半纹素内缩）", () => {
     const manifest = manifestWithAtlas();
     // 槽位 (0,0) = 最小 x/z 的那格；页 96×96，slot 32，内缩 0.5 像素
