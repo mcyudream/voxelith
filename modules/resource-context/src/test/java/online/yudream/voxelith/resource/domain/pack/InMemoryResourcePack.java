@@ -13,6 +13,7 @@ public final class InMemoryResourcePack implements ResourcePack, PackStack.Prior
     private final String id;
     private final int priority;
     private final Map<String, String> jsonEntries = new HashMap<>();
+    private final Map<String, String> rawEntries = new HashMap<>();
     private final Set<Identifier> blocks = new java.util.HashSet<>();
 
     public InMemoryResourcePack(String id, int priority) {
@@ -28,6 +29,11 @@ public final class InMemoryResourcePack implements ResourcePack, PackStack.Prior
     public InMemoryResourcePack putBlockstate(Identifier block, String json) {
         jsonEntries.put(AssetPaths.blockstate(block), json);
         blocks.add(block);
+        return this;
+    }
+
+    public InMemoryResourcePack putRaw(String path, String content) {
+        rawEntries.put(path, content);
         return this;
     }
 
@@ -54,6 +60,11 @@ public final class InMemoryResourcePack implements ResourcePack, PackStack.Prior
     @Override
     public Optional<PackResource> texture(Identifier texture) {
         return Optional.empty();
+    }
+
+    @Override
+    public Optional<PackResource> raw(String path) {
+        return Optional.ofNullable(rawEntries.get(path)).map(s -> new PackResource(s.getBytes()));
     }
 
     @Override
