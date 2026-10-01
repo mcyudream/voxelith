@@ -1,7 +1,9 @@
 package online.yudream.voxelith.resource.infrastructure.biome;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import online.yudream.voxelith.resource.domain.biome.BiomeEffects;
 import online.yudream.voxelith.resource.domain.biome.BiomeSource;
 import online.yudream.voxelith.resource.domain.pack.PackResource;
@@ -59,19 +61,39 @@ public final class PackBiomeSource implements BiomeSource {
         if (root.has("effects")) {
             JsonObject effects = root.getAsJsonObject("effects");
             if (effects.has("grass_color")) {
-                grassColor = effects.get("grass_color").getAsInt();
+                grassColor = parseColor(effects.get("grass_color"));
             }
             if (effects.has("foliage_color")) {
-                foliageColor = effects.get("foliage_color").getAsInt();
+                foliageColor = parseColor(effects.get("foliage_color"));
             }
             if (effects.has("grass_color_modifier")) {
                 modifier = effects.get("grass_color_modifier").getAsString();
             }
             if (effects.has("water_color")) {
-                waterColor = effects.get("water_color").getAsInt();
+                waterColor = parseColor(effects.get("water_color"));
             }
         }
         return new BiomeEffects(temperature, downfall, grassColor, foliageColor, modifier, waterColor);
+    }
+
+    /** 兼容旧版裸整数与新 1.21.x "#rrggbb" 字符串两种色值形态；非法值退 null 走默认色，不让渲染失败。 */
+    private static Integer parseColor(JsonElement element) {
+        if (element == null || !element.isJsonPrimitive()) {
+            return null;
+        }
+        JsonPrimitive primitive = element.getAsJsonPrimitive();
+        if (primitive.isNumber()) {
+            return primitive.getAsInt();
+        }
+        String s = primitive.getAsString().trim();
+        if (s.startsWith("#")) {
+            s = s.substring(1);
+        }
+        try {
+            return (int) (Long.parseLong(s, 16) & 0xFFFFFF);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private Optional<int[]> loadColormap(String name) {
