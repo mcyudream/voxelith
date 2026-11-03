@@ -123,6 +123,7 @@ public class RenderJobService {
 
     private final WorldStore store;
     private final RenderInputs inputs;
+    private final ResourcePackStore resourcePacks;
     private final Path publishDir;
     private final int defaultMinY;
     private final int defaultMaxLevel;
@@ -148,12 +149,14 @@ public class RenderJobService {
         return t;
     });
 
-    public RenderJobService(WorldStore store, RenderInputs inputs, Path publishDir,
+    public RenderJobService(WorldStore store, RenderInputs inputs, ResourcePackStore resourcePacks,
+                            Path publishDir,
                             int defaultMinY, int defaultMaxLevel, boolean defaultLodAtlas,
                             boolean defaultMeshopt,
                             int maxChunks, int batchChunks, long renderHeapBytes) {
         this.store = store;
         this.inputs = inputs;
+        this.resourcePacks = resourcePacks;
         this.publishDir = publishDir.toAbsolutePath().normalize();
         this.defaultMinY = defaultMinY;
         this.defaultMaxLevel = defaultMaxLevel;
@@ -364,11 +367,13 @@ public class RenderJobService {
 
     /**
      * 可选资源包：请求里给了就用请求的，否则按存档版本自动挑（见
-     * {@link RenderInputs#packsForVersion(String)}）。
+     * {@link RenderInputs#packsForVersion(String)}）。请求里的材质包
+     * （{@code resourcePacks}）叠加在最上层（优先级最高，覆盖原版与 mod 贴图）。
      */
     private List<Path> resolvePacks(RenderRequest request, String worldVersion) {
+        List<Path> base;
         if (request.packs() != null && !request.packs().isEmpty()) {
-            List<Path> packs = new ArrayList<>();
+            base = new ArrayList<>();
             for (String raw : request.packs()) {
                 if (raw == null || raw.isBlank()) {
                     continue;
@@ -377,13 +382,44 @@ public class RenderJobService {
                 if (!Files.isRegularFile(path)) {
                     throw new IllegalArgumentException("资源包不存在: " + path);
                 }
-                packs.add(path);
+                base.add(path);
             }
-            if (!packs.isEmpty()) {
-                return packs;
+            if (base.isEmpty()) {
+                base = inputs.packsForVersion(worldVersion);
+            }
+        } else {
+            base = new ArrayList<>(inputs.packsForVersion(worldVersion));
+        }
+        appendResourcePacks(base, request.resourcePacks());
+        return List.copyOf(base);
+    }
+
+    /**
+     * 把材质包追加到包栈末端（优先级最高）。裸文件名（不含路径分隔符）按受管
+     * 材质包目录解析，方便命令行/脚本只给名字；其余按字面路径处理。
+     */
+    private void appendResourcePacks(List<Path> base, List<String> packPaths) {
+        if (packPaths == null || packPaths.isEmpty()) {
+            return;
+        }
+        for (String raw : packPaths) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            Path path = Path.of(raw.trim());
+            if (path.getNameCount() == 1 && !Files.exists(path)) {
+                Path managed = resourcePacks.dir().resolve(path);
+                if (Files.exists(managed)) {
+                    path = managed;
+                }
+            }
+            if (!Files.exists(path)) {
+                throw new IllegalArgumentException("材质包不存在: " + raw.trim());
+            }
+            if (!base.contains(path)) {
+                base.add(path);
             }
         }
-        return inputs.packsForVersion(worldVersion);
     }
 
     /**

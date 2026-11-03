@@ -60,3 +60,22 @@ export {
 export { TiltOrbitControls, type TiltOrbitOptions } from "./controls/TiltOrbitControls.js";
 export type { CameraControls, CameraMode, LookOptions } from "./controls/CameraControls.js";
 export { loadManifest } from "./manifest/loadManifest.js";
+export {
+  DEFAULT_LIGHT_PARAMS,
+  LightEngine,
+  type LightEngineOptions,
+  type LightParams,
+} from "./enhance/LightEngine.js";
+export { DayNightCycle, daylightFactor } from "./enhance/DayNightCycle.js";
+export {
+  mapPackOption,
+  parseShaderPack,
+  shaderPackFromConfig,
+  type ShaderPackApplied,
+  type ShaderPackOption,
+  type ShaderPackTweaks,
+} from "./enhance/ShaderPack.js";
+export { SkyDome } from "./enhance/SkyDome.js";
+export { CloudLayer } from "./enhance/CloudLayer.js";
+export { SunShadow } from "./enhance/SunShadow.js";
+export { PostChain } from "./enhance/PostChain.js";

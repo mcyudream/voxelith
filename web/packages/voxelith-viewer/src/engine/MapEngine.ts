@@ -19,6 +19,12 @@ export { supportsDisplayP3 };
 /** 每帧更新钩子：dtSeconds 已截断（移动积分），rawDtSeconds 为真实间隔（FPS 统计）。 */
 export type FrameHook = (dtSeconds: number, rawDtSeconds: number) => void;
 
+/** 后处理管线挂接点：光影引擎（PostChain）注入后接管 renderer.render。 */
+export interface PostPipeline {
+  render(): void;
+  setSize(width: number, height: number): void;
+}
+
 export class MapEngine {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -29,6 +35,7 @@ export class MapEngine {
   private lastFrameTime = performance.now();
   private disposed = false;
   private displayP3: boolean;
+  private postPipeline: PostPipeline | null = null;
 
   constructor(options: MapEngineOptions) {
     this.renderer = new THREE.WebGLRenderer({
@@ -44,6 +51,9 @@ export class MapEngine {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(options.background ?? 0x87ceeb);
+    // 瓦片材质是 MeshLambertMaterial（光影引擎要往场景里加太阳/阴影），环境光 π
+    // 恰好等于「1.0 × 反照率」——没有光影时渲染结果与旧 MeshBasicMaterial 逐像素一致
+    this.scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
 
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, 100000);
     this.camera.position.set(0, 90, 24);
@@ -60,6 +70,18 @@ export class MapEngine {
         this.render();
       }
     });
+  }
+
+  /**
+   * 挂接/摘除后处理管线（传 null 还原直渲染）。挂在引擎上而不是让光影引擎
+   * 自己每帧抢渲染，是为了 resize / 帧循环的生命周期都归引擎管。
+   */
+  setPostPipeline(pipeline: PostPipeline | null): void {
+    this.postPipeline = pipeline;
+    const { clientWidth, clientHeight } = this.renderer.domElement;
+    if (pipeline && clientWidth > 0 && clientHeight > 0) {
+      pipeline.setSize(clientWidth, clientHeight);
+    }
   }
 
   /**
@@ -107,7 +129,11 @@ export class MapEngine {
     for (const hook of this.frameHooks) {
       hook(dt, rawDt);
     }
-    this.renderer.render(this.scene, this.camera);
+    if (this.postPipeline) {
+      this.postPipeline.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   resizeToCanvas(): void {
@@ -118,6 +144,7 @@ export class MapEngine {
       return;
     }
     this.renderer.setSize(width, height, false);
+    this.postPipeline?.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   }

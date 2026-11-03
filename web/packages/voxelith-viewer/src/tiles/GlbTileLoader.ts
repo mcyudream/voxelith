@@ -3,8 +3,9 @@
  *
  * 瓦片几何的 POSITION 为瓦片局部坐标，加载后由 TileManager 平移到世界原点。
  * Phase 2 起瓦片携带烘焙光照（_LIGHT ubyte normalized：sky/block/ao）与染色（COLOR_0），
- * 统一转为带光照解码 shader 的 MeshBasicMaterial：texel × tint × 光照亮度 × AO，
+ * 统一转为带光照解码 shader 的 MeshLambertMaterial：texel × tint × 光照亮度 × AO，
  * 光照强度经全局共享 uniforms 参数化（昼夜调光），旧格式瓦片（无 _LIGHT）回退无光照渲染。
+ * 用 Lambert 是为了吃光影引擎的太阳/阴影（场景常驻环境光 π，无光影时与 Basic 逐像素一致）。
  *
  * 防御约定：
  * - 每个瓦片解析完成后先做 {@link validateTileGroup}：拦截 NaN/Infinity 顶点与越界索引，
@@ -261,11 +262,13 @@ export class GlbTileLoader {
     mesh: THREE.Mesh,
     replaced: Set<THREE.Texture>,
     level: number,
-  ): THREE.MeshBasicMaterial {
+  ): THREE.MeshLambertMaterial {
     const source = mesh.material as THREE.MeshStandardMaterial;
     const geometry = mesh.geometry;
     const hasBakedLight = geometry.hasAttribute("_light");
-    const material = new THREE.MeshBasicMaterial({
+    // Lambert 而不是 Basic：光影引擎往场景里加太阳/环境光时瓦片能吃到光照与阴影。
+    // 场景常驻「环境光 π」，没有光影时输出与 Basic 逐像素一致（π 恰好抵消 Lambert 的 1/π）。
+    const material = new THREE.MeshLambertMaterial({
       map: source.map ?? null,
       alphaTest: source.alphaTest > 0 ? source.alphaTest : 0,
       transparent: source.transparent,
@@ -277,6 +280,10 @@ export class GlbTileLoader {
       // 半透明面（水）：写入深度以避免相邻瓦片叠blend接缝；透明通道内按距离排序绘制
       material.depthWrite = true;
     }
+    // 阴影参与：不透明面投射 + 接收；水面/玻璃只接收不投射（原版水里没有 blob 影）。
+    // 光影关闭时 renderer.shadowMap.enabled=false，这些标志是惰性的，零开销。
+    mesh.receiveShadow = true;
+    mesh.castShadow = !source.transparent;
     if (level > 0) {
       // LOD：内嵌色图（增量/旧瓦片）优先，否则用该层共享图集页（全量瓦片）。
       // 两者都没有时保持 map=null，仅由 COLOR_0 的方向明暗着色。

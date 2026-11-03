@@ -14,6 +14,7 @@ import java.util.List;
  * @param minY       最低渲染高度（留空取服务端默认；低于它的方块不参与网格化）
  * @param maxLevel   LOD 最高层级（0 = 自动）
  * @param packs      资源包路径（低 → 高优先级）；留空取服务端默认与自动发现
+ * @param resourcePacks 材质包路径（叠加在基础包栈之上，优先级最高）；留空只用基础包栈
  * @param modelsFile runtime 采集产物 models.json.gz；留空自动探测
  * @param lodAtlas   是否生成 LOD 分层图集页
  * @param meshopt    是否启用 EXT_meshopt_compression 熵编码（留空取服务端默认，默认开）
@@ -30,6 +31,7 @@ public record RenderRequest(
         Integer minY,
         Integer maxLevel,
         List<String> packs,
+        List<String> resourcePacks,
         String modelsFile,
         Boolean lodAtlas,
         Boolean meshopt) {

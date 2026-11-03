@@ -17,13 +17,13 @@ class RenderJobLimitsTest {
     private static final long GIB = 1024L * 1024 * 1024;
 
     private static RenderJobService service(int maxChunks, long heapBytes) {
-        return new RenderJobService(null, null, Path.of("."),
+        return new RenderJobService(null, null, null, Path.of("."),
                 BakeCommand.NO_MIN_Y, 0, true, true, maxChunks, 0, heapBytes);
     }
 
     /** 分遍渲染开着时的服务（内存只与单批相关，拒绝线改成时间/磁盘保护）。 */
     private static RenderJobService batchedService(int batchChunks, long heapBytes) {
-        return new RenderJobService(null, null, Path.of("."),
+        return new RenderJobService(null, null, null, Path.of("."),
                 BakeCommand.NO_MIN_Y, 0, true, true, 0, batchChunks, heapBytes);
     }
 

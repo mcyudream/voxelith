@@ -5,6 +5,8 @@ import online.yudream.voxelith.bake.application.BakeCommand;
 import online.yudream.voxelith.server.upload.PreviewService;
 import online.yudream.voxelith.server.upload.RenderInputs;
 import online.yudream.voxelith.server.upload.RenderJobService;
+import online.yudream.voxelith.server.upload.ResourcePackStore;
+import online.yudream.voxelith.server.upload.ShaderPackStore;
 import online.yudream.voxelith.server.upload.WorldStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -73,9 +75,26 @@ public class UploadRenderConfig {
     }
 
     @Bean
+    public ResourcePackStore resourcePackStore(
+            @Value("${yudream.voxelith.resourcepack-dir:./data/resourcepacks}") String resourcePackDir) {
+        return new ResourcePackStore(Path.of(resourcePackDir));
+    }
+
+    /**
+     * 光影包仓库：查看器加载光影包预设时，从这里的 zip 里读配置层
+     * （shaders.properties + GLSL 标量 #define），避免浏览器下载整个几十 MB 的包。
+     */
+    @Bean
+    public ShaderPackStore shaderPackStore(
+            @Value("${yudream.voxelith.shaderpack-dir:./data/shaderpacks}") String shaderPackDir) {
+        return new ShaderPackStore(Path.of(shaderPackDir));
+    }
+
+    @Bean
     public RenderJobService renderJobService(
             WorldStore worldStore,
             RenderInputs renderInputs,
+            ResourcePackStore resourcePackStore,
             @Value("${yudream.voxelith.publish-dir:./data/maps}") String publishDir,
             @Value("${yudream.voxelith.render.min-y:}") String minY,
             @Value("${yudream.voxelith.render.max-level:0}") int maxLevel,
@@ -86,7 +105,7 @@ public class UploadRenderConfig {
             @Value("${yudream.voxelith.render.heap:}") String renderHeap) {
         // min-y 留空 = 不限制：存档高度差异极大（地表可能在 y≈0，也可能在 y≈200），
         // 服务端不该替用户猜；前端会按预览算出的地表高度给出建议默认值
-        return new RenderJobService(worldStore, renderInputs, Path.of(publishDir),
+        return new RenderJobService(worldStore, renderInputs, resourcePackStore, Path.of(publishDir),
                 minY == null || minY.isBlank() ? BakeCommand.NO_MIN_Y : Integer.parseInt(minY.trim()),
                 maxLevel, lodAtlas, meshopt, maxChunks, batchChunks, heapBytes(renderHeap));
     }

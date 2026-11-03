@@ -42,6 +42,12 @@ import java.util.stream.Stream;
  * GET    /api/uploads/{id}/preview         预览状态
  * GET    /api/uploads/{id}/preview.png     预览图
  * GET    /api/render/defaults              渲染默认值与可选资源包
+ * GET    /api/resourcepacks                受管材质包列表
+ * POST   /api/resourcepacks/archive        上传材质包 zip（multipart）
+ * POST   /api/resourcepacks/local          登记本机材质包路径（不复制）
+ * DELETE /api/resourcepacks/{name}         删除受管材质包
+ * GET    /api/shaderpacks                  受管光影包列表
+ * GET    /api/shaderpacks/{name}/config    光影包配置层（properties + GLSL #define）
  * POST   /api/render/jobs                  提交渲染任务
  * GET    /api/render/jobs                  任务列表
  * GET    /api/render/jobs/{id}             任务详情
@@ -56,15 +62,19 @@ public class UploadController {
     private final PreviewService previews;
     private final RenderJobService jobs;
     private final RenderInputs inputs;
+    private final ResourcePackStore resourcePacks;
+    private final ShaderPackStore shaderPacks;
     private final Path publishDir;
 
     public UploadController(WorldStore store, PreviewService previews, RenderJobService jobs,
-                            RenderInputs inputs,
+                            RenderInputs inputs, ResourcePackStore resourcePacks, ShaderPackStore shaderPacks,
                             @Value("${yudream.voxelith.publish-dir:./data/maps}") String publishDir) {
         this.store = store;
         this.previews = previews;
         this.jobs = jobs;
         this.inputs = inputs;
+        this.resourcePacks = resourcePacks;
+        this.shaderPacks = shaderPacks;
         this.publishDir = Path.of(publishDir).toAbsolutePath().normalize();
     }
 
@@ -203,6 +213,73 @@ public class UploadController {
         return Map.of("removed", removed, "mapId", mapId);
     }
 
+    // ---------- 材质包 ----------
+
+    /**
+     * <pre>
+     * GET    /api/resourcepacks          受管材质包列表
+     * POST   /api/resourcepacks/archive  上传材质包 zip（multipart）
+     * POST   /api/resourcepacks/local    登记本机材质包路径（不复制）
+     * DELETE /api/resourcepacks/{name}   删除受管材质包
+     * </pre>
+     * 上传/登记都会做可读性校验（zip 能开、能探测出资源根），坏包在登记时就被拦下。
+     */
+    @GetMapping("/resourcepacks")
+    public List<ResourcePackStore.PackInfo> resourcePacks() {
+        return resourcePacks.list();
+    }
+
+    @PostMapping(value = "/resourcepacks/archive", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResourcePackStore.PackInfo uploadResourcePack(
+            @RequestPart("file") MultipartFile file) {
+        if (file.isEmpty()) {
+            throw new IllegalArgumentException("上传的文件为空");
+        }
+        try (var in = file.getInputStream()) {
+            return resourcePacks.saveUpload(in, file.getOriginalFilename());
+        } catch (IOException e) {
+            throw new UncheckedIOException("读取上传流失败", e);
+        }
+    }
+
+    @PostMapping("/resourcepacks/local")
+    public ResourcePackStore.PackInfo registerResourcePack(@RequestBody LocalPackRequest request) {
+        if (request.path() == null || request.path().isBlank()) {
+            throw new IllegalArgumentException("请填写材质包路径");
+        }
+        return resourcePacks.registerLocal(request.path());
+    }
+
+    @DeleteMapping("/resourcepacks/{name}")
+    public Map<String, Object> deleteResourcePack(@PathVariable String name) {
+        boolean removed = resourcePacks.deleteManaged(name);
+        return Map.of("removed", removed, "name", name);
+    }
+
+    /** 本机材质包登记请求。 */
+    public record LocalPackRequest(String path) {
+    }
+
+    // ---------- 光影包 ----------
+
+    /**
+     * <pre>
+     * GET /api/shaderpacks                受管目录里的光影包列表
+     * GET /api/shaderpacks/{name}/config  配置层（shaders.properties + GLSL 标量 #define）
+     * </pre>
+     * 光影包在查看器里是纯前端预设；服务端只代读大 zip 里的少量配置文本，
+     * 浏览器不必下载并解压整个包。用户把社区光影包 zip 放进受管目录即可生效。
+     */
+    @GetMapping("/shaderpacks")
+    public List<ShaderPackStore.PackInfo> shaderPacks() {
+        return shaderPacks.list();
+    }
+
+    @GetMapping("/shaderpacks/{name}/config")
+    public ShaderPackStore.PackConfig shaderPackConfig(@PathVariable String name) {
+        return shaderPacks.readConfig(name);
+    }
+
     // ---------- 渲染任务 ----------
 
     @GetMapping("/render/defaults")
@@ -210,6 +287,7 @@ public class UploadController {
         Map<String, Object> result = new LinkedHashMap<>();
         List<String> packs = inputs.packs().stream().map(Path::toString).toList();
         result.put("packs", packs);
+        result.put("resourcePacks", resourcePacks.list());
         result.put("modelsFile", inputs.modelsFile().map(Path::toString).orElse(null));
         result.put("clientJarCandidates", inputs.discoverAllClientJars().stream()
                 .map(Path::toString).toList());
