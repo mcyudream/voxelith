@@ -133,12 +133,14 @@ public final class RenderMapCli {
                 err.println("窗口内没有非空区块");
                 return 1;
             }
-            if (options.maxChunks() > 0 && chunks.size() > options.maxChunks()) {
+            // 护栏只拦「单遍」渲染：批模式（--batch-chunks）下峰值内存只与单批相关，
+            // 窗口多大都能跑，不该再按窗口大小一票否决（批不可用时仍拦，此时真的会 OOM）
+            if (options.maxChunks() > 0 && chunks.size() > options.maxChunks() && options.batchChunks() <= 0) {
                 err.printf("范围过大：窗口内非空区块 %d 个，超过单次渲染上限 %d 个。%n",
                         chunks.size(), options.maxChunks());
                 err.println("  原因：bake 会把窗口内所有区块的网格一次性留在内存里，"
                         + "范围越大越容易在中途内存不足而失败。");
-                err.printf("  建议：把框选范围缩到目标的 1/%d 左右（例如只框校园 / 城区），"
+                err.printf("  建议：加 --batch-chunks（如 2048）改多遍渲染，把框选范围缩到目标的 1/%d 左右，"
                         + "或调大服务端配置 yudream.voxelith.render.max-chunks。%n",
                         Math.max(2, chunks.size() / Math.max(1, options.maxChunks()) + 1));
                 return 3;
