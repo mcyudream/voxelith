@@ -158,8 +158,13 @@ export class TileManager {
     // 按 glTF 约定配置（flipY=false + SRGBColorSpace），过滤参数由 GlbTileLoader 统一设置。
     // 无 DOM 环境（vitest/node）无法解码图片，跳过共享图集回退逐瓦片内嵌。
     if (!options.loader && options.manifest.atlas?.url && typeof document !== "undefined") {
+      // 版本戳与 LOD 图集页同理：URL 固定会被 7 天强缓存挡住重渲后的新图集，
+      // 且瞬时错误（如后端重启窗口期的 403）也会被缓存成「永远加载不出贴图」——
+      // 表现就是整张地图白模、所有 hires 瓦片等待共享图集而停摆。
       this.sharedAtlas = configureHiresAtlas(
-        new THREE.TextureLoader().load(`${this.mapBaseUrl}/${options.manifest.atlas.url}`),
+        new THREE.TextureLoader().load(
+          `${this.mapBaseUrl}/${options.manifest.atlas.url}?v=${encodeURIComponent(options.manifest.generatedAt)}`,
+        ),
       );
       this.sharedAtlas.userData.voxelithShared = true;
     }
