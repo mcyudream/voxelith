@@ -163,7 +163,7 @@ public final class ChunkMeshBuilder {
                 missing.merge(variant.model(), 1, Integer::sum);
                 continue;
             }
-            for (Quad quad : baker.bake(model.get(), variant.x(), variant.y())) {
+            for (Quad quad : baker.bake(model.get(), variant.x(), variant.y(), variant.uvLock())) {
                 if (isCulled(quad, x, y, z)) {
                     continue;
                 }

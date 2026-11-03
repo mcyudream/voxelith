@@ -9,7 +9,8 @@ import java.util.List;
 /**
  * 模型几何烘焙器：把展开后的模型元素烘焙成 quad 列表。
  * 顺序与原版一致：面投影（含默认 uv 推导与 uv 旋转）→ 元素旋转 → 变体旋转（先 x 后 y）。
- * uvLock 一期不实现（旋转变体的 uv 按默认投影取值）。
+ * uvlock 时 uv 矩形与 rotation 先按原版 FaceBakery.recomputeUVs + BlockMath.getUVLockTransform
+ * 重投影（见 {@link UvLock}），再按重投影结果做索引制角点采样。
  */
 public final class ModelGeometryBaker {
 
@@ -23,6 +24,10 @@ public final class ModelGeometryBaker {
     public static final String MISSING_TEXTURE = online.yudream.voxelith.sharedkernel.vo.MissingTexture.ID;
 
     public List<Quad> bake(ModelData model, int variantX, int variantY) {
+        return bake(model, variantX, variantY, false);
+    }
+
+    public List<Quad> bake(ModelData model, int variantX, int variantY, boolean uvLock) {
         List<Quad> quads = new ArrayList<>();
         for (ModelData.ElementData element : model.elements()) {
             for (var entry : element.faces().entrySet()) {
@@ -36,6 +41,11 @@ public final class ModelGeometryBaker {
 
                 float[][] corners = FaceProjection.corners(dir, element.from(), element.to());
                 float[][] uvs = FaceProjection.uvs(dir, element.from(), element.to(), face.uv(), face.rotation());
+                // uvlock：旋转变体的 uv 按原版语义重投影（纹理锁世界朝向，楼梯木纹等不再跟着几何转）
+                if (uvLock && (variantX != 0 || variantY != 0)) {
+                    float[] rect = FaceProjection.rawRect(dir, element.from(), element.to(), face.uv());
+                    uvs = UvLock.reproject(dir, variantX, variantY, rect, face.rotation());
+                }
                 float[] normal = {dir.nx(), dir.ny(), dir.nz()};
                 float[] cullVec = null;
                 if (face.cullface() != null) {

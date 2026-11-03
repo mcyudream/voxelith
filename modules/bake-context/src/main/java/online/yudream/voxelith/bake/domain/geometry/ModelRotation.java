@@ -3,7 +3,10 @@ package online.yudream.voxelith.bake.domain.geometry;
 import online.yudream.voxelith.sharedkernel.vo.Direction;
 
 /**
- * 旋转数学：全部遵循 MC 约定 —— 绕 +轴的右手旋转、角度取负。
+ * 旋转数学：全部遵循 MC 约定 —— 绕 +轴的右手旋转。
+ * 变体旋转角度取负（原版 BlockModelRotation 构造为 rotateYXZ(-y, -x, 0)）；
+ * 元素旋转角度取正（原版 FaceBakery 为 rotationAxis(+angle·π/180, axis)，2026-11-03 反编译对照修正，
+ * 此前误用了与变体相同的负角约定）。
  * rotX(90°): (x,y,z)→(x,z,-y)；rotY(90°): (x,y,z)→(-z,y,x)。已用楼梯/末地烛验证。
  */
 public final class ModelRotation {
@@ -16,7 +19,7 @@ public final class ModelRotation {
      * 施加 1/cos(angle) 放大（MC 对 22.5/45 度元素的补偿）。
      */
     public static void rotateElement(float[] p, float[] pivot, String axis, float angleDeg, boolean rescale) {
-        double rad = Math.toRadians(-angleDeg);
+        double rad = Math.toRadians(angleDeg);
         double cos = Math.cos(rad);
         double sin = Math.sin(rad);
         double scale = rescale && angleDeg % 90 != 0 ? 1.0 / cos : 1.0;
