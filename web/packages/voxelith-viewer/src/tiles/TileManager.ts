@@ -141,7 +141,11 @@ export class TileManager {
     this.scene = options.scene;
     this.mapBaseUrl = options.mapBaseUrl;
     this.manifest = options.manifest;
-    this.maxConcurrent = options.maxConcurrent ?? 16;
+    // 2026-11-06：细节视距上调后单帧期望集可达上万片，16 并发下"远处的 hires 瓦片"
+    // 要流式加载几分钟（这段时间远处只能看到糊的 LOD 色图，用户实测误以为是画质问题）。
+    // 提到 32——浏览器对同源 HTTP/1.1 实际并发上限约 6，这里只在解析/入队侧放宽，
+    // 让完成回调密集时段不排队等槽位。
+    this.maxConcurrent = options.maxConcurrent ?? 32;
     this.maxLoaded = options.maxLoaded ?? 4096;
     this.maxBytes = options.maxBytes ?? 2 * 1024 * 1024 * 1024;
     this.lodFactor = options.lodFactor ?? 3;
