@@ -49,7 +49,8 @@ describe("AdaptiveDistance", () => {
 
   it("初始视距夹在 [min, max]", () => {
     const { stub, calls } = stubTileManager();
-    new AdaptiveDistance({ tileManager: stub, initialChunks: 100 });
+    // 显式传入测试用的上限（默认上限已提到 96，见 AdaptiveDistance 默认值）
+    new AdaptiveDistance({ tileManager: stub, initialChunks: 100, maxChunks: MAX });
     expect(calls).toEqual([MAX * 16]);
   });
 

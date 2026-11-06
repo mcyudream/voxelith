@@ -29,9 +29,16 @@ export interface DeviceProfile {
   gpuRenderer: string;
 }
 
-/** 三档初始视距（区块）：高档 24、中档 16、低档 10。 */
+/**
+ * 三档初始视距（区块）：高档 64、中档 32、低档 16。
+ *
+ * <p>2026-11-06 上调（原 24/16/10）：视距内细分到块级几何（hires 瓦片，真实贴图、窗户可辨），
+ * 视距外只有 LOD 色图。旧的 24 区块 = 384 方块，中远处建筑只剩色块、看不见窗户
+ * （用户对比 Voxy 的直观差异）。地图的块级瓦片本来就是全量渲染的（校园 4215 片 L0），
+ * 高档 GPU 完全吃得下更大视距；弱设备仍由低档与自适应机制兜底。</p>
+ */
 export function initialViewDistanceChunks(tier: DeviceTier): number {
-  return tier === "high" ? 24 : tier === "mid" ? 16 : 10;
+  return tier === "high" ? 64 : tier === "mid" ? 32 : 16;
 }
 
 /**

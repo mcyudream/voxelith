@@ -59,10 +59,10 @@ describe("computeTier", () => {
 });
 
 describe("initialViewDistanceChunks", () => {
-  it("高 24 / 中 16 / 低 10 区块", () => {
-    expect(initialViewDistanceChunks("high")).toBe(24);
-    expect(initialViewDistanceChunks("mid")).toBe(16);
-    expect(initialViewDistanceChunks("low")).toBe(10);
+  it("高 64 / 中 32 / 低 16 区块", () => {
+    expect(initialViewDistanceChunks("high")).toBe(64);
+    expect(initialViewDistanceChunks("mid")).toBe(32);
+    expect(initialViewDistanceChunks("low")).toBe(16);
   });
 });
 
