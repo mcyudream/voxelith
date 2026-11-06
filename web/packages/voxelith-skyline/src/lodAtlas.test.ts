@@ -6,7 +6,7 @@ import { levelTileBounds, levelTilesWithUv, lodAtlasUvRect } from "./lodAtlas.js
  * 测例刻意用**非 2 的幂网格 + 负坐标**：真实地图从 (0,0) 向负方向扩展，
  * 槽位定位一旦用错基准（比如忘记减 minTileX），负坐标那半边就会整片错色。
  */
-function manifestWithAtlas(): MapManifest {
+function manifestWithAtlas(slotSize = 32): MapManifest {
   const tiles: ManifestTile[] = [];
   const push = (level: number, x: number, z: number): void => {
     const size = 32 * 2 ** level;
@@ -38,7 +38,7 @@ function manifestWithAtlas(): MapManifest {
     boundsMin: [-128, 64, 0],
     boundsMax: [128, 70, 384],
     atlas: { url: "atlas.png", size: 256, textureCount: 9 },
-    lodAtlases: [{ level: 2, url: "tiles/lod/2/lod-atlas.png", slotSize: 32, sha1: "abc" }],
+    lodAtlases: [{ level: 2, url: "tiles/lod/2/lod-atlas.png", slotSize, sha1: "abc" }],
     tiles,
   });
 }
@@ -52,26 +52,26 @@ describe("LOD 图集页槽位换算", () => {
 
   /**
    * 跨实现金标准：这组数字与后端 `LodAtlasPackerTest.uvRectMatchesFrontendGoldenVector`
-   * 使用**同一组输入与同一批字面量**（L2、x∈[-1,1]、z∈[0,2]、slot 32、页 96×96）。
+   * 使用**同一组输入与同一批字面量**（L2、x∈[-1,1]、z∈[0,2]、slot 64、页 192×192）。
    * 谁改了一侧的公式，另一侧的测试就会红。
    */
   it("UV 矩形与后端 LodAtlasPacker 同一套公式（行主序 + 半纹素内缩）", () => {
-    const manifest = manifestWithAtlas();
-    // 槽位 (0,0) = 最小 x/z 的那格；页 96×96，slot 32，内缩 0.5 像素
+    const manifest = manifestWithAtlas(64);
+    // 槽位 (0,0) = 最小 x/z 的那格；页 192×192，slot 64，内缩 0.5 像素
     const first = lodAtlasUvRect(manifest, 2, -1, 0)!;
-    expect(first.pageWidth).toBe(96);
-    expect(first.pageHeight).toBe(96);
-    expect(first.u0).toBeCloseTo(0.5 / 96, 8);
-    expect(first.v0).toBeCloseTo(0.5 / 96, 8);
-    expect(first.u1).toBeCloseTo(31.5 / 96, 8);
-    expect(first.v1).toBeCloseTo(31.5 / 96, 8);
+    expect(first.pageWidth).toBe(192);
+    expect(first.pageHeight).toBe(192);
+    expect(first.u0).toBeCloseTo(0.5 / 192, 8);
+    expect(first.v0).toBeCloseTo(0.5 / 192, 8);
+    expect(first.u1).toBeCloseTo(63.5 / 192, 8);
+    expect(first.v1).toBeCloseTo(63.5 / 192, 8);
 
     // 槽位 (2,1) = 第 3 列第 2 行
     const middle = lodAtlasUvRect(manifest, 2, 1, 1)!;
-    expect(middle.u0).toBeCloseTo((2 * 32 + 0.5) / 96, 8);
-    expect(middle.v0).toBeCloseTo((1 * 32 + 0.5) / 96, 8);
-    expect(middle.u1).toBeCloseTo((3 * 32 - 0.5) / 96, 8);
-    expect(middle.v1).toBeCloseTo((2 * 32 - 0.5) / 96, 8);
+    expect(middle.u0).toBeCloseTo((2 * 64 + 0.5) / 192, 8);
+    expect(middle.v0).toBeCloseTo((1 * 64 + 0.5) / 192, 8);
+    expect(middle.u1).toBeCloseTo((3 * 64 - 0.5) / 192, 8);
+    expect(middle.v1).toBeCloseTo((2 * 64 - 0.5) / 192, 8);
     expect(middle.url).toBe("tiles/lod/2/lod-atlas.png");
   });
 

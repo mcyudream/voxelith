@@ -60,14 +60,18 @@ public final class LodAtlasPacker {
     }
 
     /**
-     * 槽位边长：层级越深越小（L1 = 64、L2 = 32、更深 32），再按页面上限收缩并对齐到 8 像素。
+     * 槽位边长：层级越深越小（L1 = 128、L2 起 64），再按页面上限收缩并对齐到 8 像素。
      *
      * <p>为什么随层减半：LOD 是远景色图，层级 L 的瓦片在屏幕上的跨度约为 L1 的 1/2^(L-1)，
      * 保持同一分辨率纯属浪费——按层减半让整页像素量降到约 1/4，直接省下显存与解码时间。
      * 页面上限则保证任何网格下都不会超出设备纹理尺寸上限。</p>
+     *
+     * <p>2026-11-06 调整：基础分辨率由 64 提到 128（下限 64）。旧公式 L2 只有 32px /
+     * 128 方块 = 4 方块每像素，远处建筑明显发糊（用户对比 Voxy）；翻倍后远景细腻一档，
+     * 页面仍受 4096 上限约束（大网格自动收缩）。</p>
      */
     static int chooseSlotSize(int level, int gridWidth, int gridHeight) {
-        int base = Math.max(32, 64 >> Math.max(0, level - 1));
+        int base = Math.max(64, 128 >> Math.max(0, level - 1));
         int fit = MAX_PAGE_DIM / Math.max(gridWidth, gridHeight);
         int slot = Math.min(base, fit);
         slot = (slot / SLOT_QUANTUM) * SLOT_QUANTUM;

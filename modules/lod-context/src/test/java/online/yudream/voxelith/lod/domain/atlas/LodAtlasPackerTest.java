@@ -13,10 +13,10 @@ class LodAtlasPackerTest {
 
     @Test
     void slotSizeHalvesWithLevelAndIsCappedByPageLimit() {
-        // L1 基础 64、L2 32、更深受下限约束仍为 32
-        assertThat(LodAtlasPacker.of(1, 0, 0, 0, 0).slotSize()).isEqualTo(64);
-        assertThat(LodAtlasPacker.of(2, 0, 0, 0, 0).slotSize()).isEqualTo(32);
-        assertThat(LodAtlasPacker.of(5, 0, 0, 0, 0).slotSize()).isEqualTo(32);
+        // L1 基础 128、L2 起 64（2026-11-06 提分辨率修远景发糊）
+        assertThat(LodAtlasPacker.of(1, 0, 0, 0, 0).slotSize()).isEqualTo(128);
+        assertThat(LodAtlasPacker.of(2, 0, 0, 0, 0).slotSize()).isEqualTo(64);
+        assertThat(LodAtlasPacker.of(5, 0, 0, 0, 0).slotSize()).isEqualTo(64);
 
         // 网格过大时收缩到页面上限内（4096），并对齐到 8 像素
         LodAtlasPacker wide = LodAtlasPacker.of(1, 0, 70, 0, 70);
@@ -34,9 +34,9 @@ class LodAtlasPackerTest {
         LodAtlasPacker packer = LodAtlasPacker.of(1, 0, 3, 0, 1);
         assertThat(packer.gridWidth()).isEqualTo(4);
         assertThat(packer.gridHeight()).isEqualTo(2);
-        assertThat(packer.width()).isEqualTo(4 * 64);
-        assertThat(packer.height()).isEqualTo(2 * 64);
-        assertThat(packer.newPage()).hasSize(4 * 64 * 2 * 64);
+        assertThat(packer.width()).isEqualTo(4 * 128);
+        assertThat(packer.height()).isEqualTo(2 * 128);
+        assertThat(packer.newPage()).hasSize(4 * 128 * 2 * 128);
     }
 
     @Test
@@ -71,7 +71,7 @@ class LodAtlasPackerTest {
     @Test
     void uvRectIsInsetByHalfTexelAndOrdersByRowMajor() {
         LodAtlasPacker packer = LodAtlasPacker.of(1, 0, 1, 0, 1);
-        int size = packer.width(); // 2 槽 × 64
+        int size = packer.width(); // 2 槽 × 128
 
         float[] left = packer.uvRect(0, 0);
         float[] right = packer.uvRect(1, 0);
@@ -80,8 +80,8 @@ class LodAtlasPackerTest {
         float inset = 0.5f / size;
         assertThat(left[0]).isEqualTo(inset);
         assertThat(left[1]).isEqualTo(inset);
-        assertThat(left[2]).isEqualTo(64f / size - inset);
-        assertThat(left[3]).isEqualTo(64f / size - inset);
+        assertThat(left[2]).isEqualTo(128f / size - inset);
+        assertThat(left[3]).isEqualTo(128f / size - inset);
 
         // 同层相邻槽位：u 区间不重叠（否则会串色到邻瓦片）
         assertThat(right[0]).isGreaterThan(left[2]);
@@ -93,7 +93,7 @@ class LodAtlasPackerTest {
     }
 
     /**
-     * 跨实现金标准：同一组输入（L2、x∈[-1,1]、z∈[0,2]、slot 32、页 96×96）下，
+     * 跨实现金标准：同一组输入（L2、x∈[-1,1]、z∈[0,2]、slot 64、页 192×192）下，
      * 前端 `@yudream/voxelith-skyline` 的 `lodAtlasUvRect` 必须算出**同一批数字**
      * （见 web/packages/voxelith-skyline/src/lodAtlas.test.ts 的同名向量）。
      *
@@ -103,17 +103,17 @@ class LodAtlasPackerTest {
     @Test
     void uvRectMatchesFrontendGoldenVector() {
         LodAtlasPacker packer = LodAtlasPacker.of(2, -1, 1, 0, 2);
-        assertThat(packer.slotSize()).isEqualTo(32);
-        assertThat(packer.width()).isEqualTo(96);
-        assertThat(packer.height()).isEqualTo(96);
+        assertThat(packer.slotSize()).isEqualTo(64);
+        assertThat(packer.width()).isEqualTo(192);
+        assertThat(packer.height()).isEqualTo(192);
 
         // 槽位 (0,0)：col 0 / row 0
         assertThat(packer.uvRect(-1, 0))
-                .containsExactly(0.5f / 96, 0.5f / 96, 31.5f / 96, 31.5f / 96);
+                .containsExactly(0.5f / 192, 0.5f / 192, 63.5f / 192, 63.5f / 192);
         // 槽位 (2,1)：col 2 / row 1
         assertThat(packer.uvRect(1, 1))
-                .containsExactly((2 * 32 + 0.5f) / 96, (1 * 32 + 0.5f) / 96,
-                        (3 * 32 - 0.5f) / 96, (2 * 32 - 0.5f) / 96);
+                .containsExactly((2 * 64 + 0.5f) / 192, (1 * 64 + 0.5f) / 192,
+                        (3 * 64 - 0.5f) / 192, (2 * 64 - 0.5f) / 192);
     }
 
     private static int[] solid(int size, int argb) {

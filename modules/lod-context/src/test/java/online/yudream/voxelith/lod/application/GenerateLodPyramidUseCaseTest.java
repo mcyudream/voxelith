@@ -252,15 +252,15 @@ class GenerateLodPyramidUseCaseTest {
         assertThat(outcome.atlasPages()).hasSize(1);
         assertThat(outcome.atlasPages().getFirst().level()).isEqualTo(1);
         assertThat(outcome.atlasPages().getFirst().url()).isEqualTo("tiles/lod/1/lod-atlas.png");
-        // 单瓦片网格：槽位 64（L1 基础值，整页 64×64 未触及 4096 上限）
-        assertThat(outcome.atlasPages().getFirst().slotSize()).isEqualTo(64);
+        // 单瓦片网格：槽位 128（L1 基础值，整页 128×128 未触及 4096 上限）
+        assertThat(outcome.atlasPages().getFirst().slotSize()).isEqualTo(128);
         assertThat(outcome.atlasPages().getFirst().sha1()).isNotBlank();
 
         // 顶点 UV 已重映射进图集槽位：落在 UV 矩形内，且不再从 0 起（证明做了重映射）
         TileGeometry geometry = encoder.geometries.getFirst();
         float[] uvs = geometry.opaque().uvs();
         assertThat(uvs).isNotEmpty();
-        float inset = 0.5f / 64f;
+        float inset = 0.5f / 128f;
         for (int v = 0; v < uvs.length; v += 2) {
             assertThat(uvs[v]).isBetween(inset, 1f - inset);
             assertThat(uvs[v + 1]).isBetween(inset, 1f - inset);
