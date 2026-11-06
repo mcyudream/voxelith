@@ -396,14 +396,19 @@ export class TileManager {
 
   private shouldRefine(tile: ManifestTile): boolean {
     const size = this.manifest.settings.hiresTileSize * 2 ** tile.level;
+    const dxz = this.horizontalBoxDistance(tile);
+    // 细节视距内一律细分到 L0——**必须放在几何/屏幕误差门槛之前**。
+    // 旧顺序下地面视角（相机高度 ~10）时中远处瓦片先被门槛拦掉（几何门限 size×3、
+    // SSE 的 hdist>高度×4 护栏都过不去），永远到不了这条规则 → 200 方块外全是
+    // L1+ 色图、糊；升到高空后 SSE 门槛才通过 → 又变清楚（用户实测同一栋楼
+    // Y110 糊 / Y277 清晰的直接原因）。视距是用户可调的明确承诺，与相机高度无关。
+    if (dxz < this.detailDistance) {
+      return true;
+    }
     const geometric = this.boxDistance(tile) < size * this.lodFactor;
     const sse = this.screenErrorExceeds(tile, size);
     if (!geometric && !sse) {
       return false;
-    }
-    const dxz = this.horizontalBoxDistance(tile);
-    if (dxz < this.detailDistance) {
-      return true;
     }
     const allowedFinest = Math.min(
       this.topLevel,
