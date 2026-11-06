@@ -1021,11 +1021,13 @@ public final class RenderMapCli {
             minCz = Math.min(minCz, pos.z());
             maxCz = Math.max(maxCz, pos.z());
         }
-        // 1 个 hires 瓦片 = 2×2 区块；之后每层 2×2 聚合
+        // 1 个 hires 瓦片 = 2×2 区块；之后每层 2×2 聚合。
+        // 深度封顶 6（瓦片 2048 方块）：更深层的单瓦片比地图还大，色图槽位只覆盖地图所在
+        // 的一小部分，渲染出来是空白/白板（用户实测的"白色大板盖住校园"）。
         int tx = Math.max(1, (maxCx - minCx + 1) / 2);
         int tz = Math.max(1, (maxCz - minCz + 1) / 2);
         int level = 1;
-        while ((tx > 2 || tz > 2) && level < 12) {
+        while ((tx > 2 || tz > 2) && level < 6) {
             tx = (tx + 1) / 2;
             tz = (tz + 1) / 2;
             level++;
