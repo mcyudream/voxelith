@@ -219,13 +219,23 @@ public final class Heightfield {
                 nextFloor == Float.MAX_VALUE ? 0 : nextFloor);
     }
 
+    /**
+     * 把 src 的**有效（非 NaN）**单元并入目标。注意必须跳过 NaN：批模式的批次字段
+     * 是其采样包围盒（可能横跨很远、中间大片 NaN），裸拷贝会用 NaN 覆盖其他批次
+     * 已写好的数据——25 批全量渲染时表现为"校园核心高度场丢失 → LOD 瓦片缺失 → 空白"
+     * （2026-11-06 定位）；小窗口批次互不重叠所以之前看不出来。
+     */
     private static void copyInto(float[] destY, int[] destRgb, int destWidth,
                                  int destOriginX, int destOriginZ, Heightfield src) {
         for (int z = 0; z < src.depth; z++) {
             for (int x = 0; x < src.width; x++) {
-                int destIndex = (src.originZ + z - destOriginZ) * destWidth + (src.originX + x - destOriginX);
                 int srcIndex = z * src.width + x;
-                destY[destIndex] = src.topY[srcIndex];
+                float y = src.topY[srcIndex];
+                if (Float.isNaN(y)) {
+                    continue;
+                }
+                int destIndex = (src.originZ + z - destOriginZ) * destWidth + (src.originX + x - destOriginX);
+                destY[destIndex] = y;
                 destRgb[destIndex] = src.rgb[srcIndex];
             }
         }

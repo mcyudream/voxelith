@@ -82,6 +82,22 @@ class HeightfieldTest {
     }
 
     @Test
+    void mergeKeepsLeftDataUnderRightNaNHoles() {
+        // 回归：批模式里"当前批次"的字段是其采样包围盒（宽 bbox、内部大量 NaN），
+        // 合并时不能用 NaN 覆盖已累积的数据——否则全量多批渲染会丢失校园核心的高度场
+        // （LOD 瓦片缺失 → 高空空白）。
+        Heightfield left = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 10, 0.5f, 0x111111)), 2);
+        Heightfield right = Heightfield.fromSamples(List.of(
+                new LodSample(0.5f, 77, 10.5f, 0x222222),
+                new LodSample(10.5f, 88, 10.5f, 0x333333)), 2);
+        Heightfield merged = left.merge(right);
+        assertThat(merged.topY(0, 0)).as("左侧数据不能被右侧 bbox 内的 NaN 覆盖").isEqualTo(10f);
+        assertThat(merged.rgb(0, 0)).isEqualTo(0x111111);
+        assertThat(merged.topY(0, 5)).isEqualTo(77f);
+    }
+
+    @Test
     void clearColumnsThenMergeReplacesRegion() {
         Heightfield world = Heightfield.fromSamples(List.of(
                 new LodSample(0.5f, 10, 0.5f, 1),
