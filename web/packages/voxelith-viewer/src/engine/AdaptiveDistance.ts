@@ -17,7 +17,7 @@ export interface AdaptiveDistanceOptions {
   targetFps?: number;
   /** 视距下限（区块），默认 12 */
   minChunks?: number;
-  /** 视距上限（区块），默认 96（视距内是块级几何，窗户可辨；2026-11-06 由 32 上调） */
+  /** 视距上限（区块），默认 160（视距内是块级几何，窗户可辨；2026-11-06 由 32→96→160） */
   maxChunks?: number;
   /** 每次调整步长（区块），默认 1 */
   stepChunks?: number;
@@ -84,7 +84,7 @@ export class AdaptiveDistance {
     this.tileManager = options.tileManager;
     this.targetFps = options.targetFps ?? (options.mobile ? 30 : 60);
     this.minChunks = options.minChunks ?? 12;
-    this.maxChunks = options.maxChunks ?? 96;
+    this.maxChunks = options.maxChunks ?? 160;
     this.stepChunks = options.stepChunks ?? 1;
     this.windowMs = options.windowMs ?? 3000;
     this.onChange = options.onChange;

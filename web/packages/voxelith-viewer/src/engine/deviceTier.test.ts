@@ -59,10 +59,10 @@ describe("computeTier", () => {
 });
 
 describe("initialViewDistanceChunks", () => {
-  it("高 64 / 中 32 / 低 16 区块", () => {
-    expect(initialViewDistanceChunks("high")).toBe(64);
-    expect(initialViewDistanceChunks("mid")).toBe(32);
-    expect(initialViewDistanceChunks("low")).toBe(16);
+  it("高 96 / 中 48 / 低 20 区块", () => {
+    expect(initialViewDistanceChunks("high")).toBe(96);
+    expect(initialViewDistanceChunks("mid")).toBe(48);
+    expect(initialViewDistanceChunks("low")).toBe(20);
   });
 });
 
@@ -77,10 +77,10 @@ describe("cacheLimitsForTier", () => {
     expect(mid.maxBytes).toBeGreaterThan(low.maxBytes);
   });
 
-  it("高档沿用原有默认（4096 片 / 2GB）", () => {
+  it("高档 8192 片 / 4GB（细节视距上调后放宽）", () => {
     expect(cacheLimitsForTier("high")).toEqual({
-      maxLoaded: 4096,
-      maxBytes: 2 * 1024 * 1024 * 1024,
+      maxLoaded: 8192,
+      maxBytes: 4 * 1024 * 1024 * 1024,
     });
   });
 });
