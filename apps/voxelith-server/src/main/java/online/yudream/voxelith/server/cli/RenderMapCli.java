@@ -849,17 +849,28 @@ public final class RenderMapCli {
             missingTextures.addAll(hires.missingTextures());
             untextured += hires.untexturedQuads();
 
+            // LOD 在批内只增量更新高度场（store），瓦片留到全部批次后一次全量重建：
+            // 批内增量导出会把同一格瓦片重复写同一个 URL、且内嵌色图只含本批栅格——
+            // 结果是粗瓦片残缺、远处发糊露洞（用户实测的高空空白）。
             LodOutcome pyramid = lod.generate(new LodCommand(
                     meshes, options.workDir(), lodLevel, store, batch.regions()));
-            all.addAll(pyramid.tiles());
 
             // 显式丢引用：这一批的网格（最占内存的那份）到此为止，下一批重新开始
             meshes.clear();
             done += batch.chunks().size();
-            out.printf("  本批完成：区块 %d，hires 瓦片 %d，LOD 瓦片 %d，用时 %.1fs%n",
+            out.printf("  本批完成：区块 %d，hires 瓦片 %d，LOD 高度场已更新（%d 片增量摘要丢弃），用时 %.1fs%n",
                     batch.chunks().size(), hires.tiles().size(), pyramid.tiles().size(),
                     (System.currentTimeMillis() - tBatch) / 1000.0);
         }
+
+        // 全量 LOD 重建：高度场已含整个窗口，从它重建航拍色图并逐格网格化，
+        // 每层每格只产出一份完整瓦片（图集页也随之生成——批模式不再退回逐片内嵌色图）。
+        long tLod = System.currentTimeMillis();
+        LodOutcome rebuilt = lod.generate(new LodCommand(Map.of(), options.workDir(), lodLevel, store, List.of()));
+        all.addAll(rebuilt.tiles());
+        out.printf("LOD 全量重建完成：%d 片（含图集页 %d 张），用时 %.1fs%n",
+                rebuilt.tiles().size(), rebuilt.atlasPages().size(),
+                (System.currentTimeMillis() - tLod) / 1000.0);
 
         // 各批的瓦片摘要合在一起发布：清单的包围盒、hires 图集、LOD 层级都按整图算
         if (!entities.isEmpty()) {
@@ -881,10 +892,8 @@ public final class RenderMapCli {
                 all.stream().filter(t -> t.pos().level() > 0).count());
         MapManifest manifest = TileContextBootstrap.openPublisher().publish(
                 options.mapId(), options.mapName(), options.workDir(), merged,
-                List.of(), options.publishDir());
-        out.println("  注意：多遍渲染的 LOD 瓦片逐片内嵌色图（不分层图集页），"
-                + "地表栅格/全景输入请另行生成");
-        printSummary(options, manifest, null, System.currentTimeMillis() - t0, out);
+                rebuilt.atlasPages(), options.publishDir());
+        printSummary(options, manifest, rebuilt, System.currentTimeMillis() - t0, out);
         return 0;
     }
 

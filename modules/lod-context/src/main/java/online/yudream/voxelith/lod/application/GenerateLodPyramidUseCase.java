@@ -83,6 +83,12 @@ public class GenerateLodPyramidUseCase {
             }
             store.save(field);
         }
+        // 批模式的全量重建：本批没有方块采样（meshes 为空），但持久化高度场里已有全图的
+        // 柱顶高度与颜色——从这里重建航拍色图，全量通道才能铺图集页、补齐各层色图。
+        // 不重建时（批内增量）色图只含本批栅格，粗瓦片会内嵌半透明色图（远处发糊/露洞）。
+        if (raster.isEmpty() && samples.isEmpty() && field.width() > 0) {
+            raster = rasterFromField(field);
+        }
         int level = 1;
         while (field.width() > 0 && level <= LEVEL_CAP) {
             int minTx = field.minTileX(HeightfieldLodMesher.COLUMNS_PER_TILE);
@@ -196,6 +202,35 @@ public class GenerateLodPyramidUseCase {
         int worldX = tx * coverage;
         int worldZ = tz * coverage;
         return raster.downsample(worldX, worldZ, coverage, size);
+    }
+
+    /**
+     * 从持久化高度场重建航拍色图：高度场按 footprint（方块/格）采样，每格带柱顶高度与
+     * 面积投票色；栅格按 1 格 = 1 方块展开，把每格颜色溅到它覆盖的 footprint×footprint 方块上。
+     * 仅用于批模式的最终全量重建（meshes 为空、字段来自 store）。
+     */
+    static AerialRaster rasterFromField(Heightfield field) {
+        int fp = field.footprint();
+        if (fp <= 0 || field.width() <= 0 || field.depth() <= 0) {
+            return AerialRaster.empty();
+        }
+        float[] topY = field.copyTopY();
+        int[] rgb = field.copyRgb();
+        AerialRaster raster = new AerialRaster(
+                field.originX() * fp, field.originZ() * fp, field.width() * fp, field.depth() * fp);
+        for (int z = 0; z < field.depth(); z++) {
+            for (int x = 0; x < field.width(); x++) {
+                int i = z * field.width() + x;
+                float y = topY[i];
+                if (!Float.isFinite(y)) {
+                    continue;
+                }
+                float blockX = (field.originX() + x) * (float) fp;
+                float blockZ = (field.originZ() + z) * (float) fp;
+                raster.splat(blockX, blockX + fp, blockZ, blockZ + fp, y, rgb[i], fp * fp);
+            }
+        }
+        return raster;
     }
 
     /**
