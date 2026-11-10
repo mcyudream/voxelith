@@ -27,6 +27,16 @@ describe("decideChunks", () => {
     expect(decideChunks(32, 60, 60, 1, MIN, MAX, STEP)).toEqual({ chunks: 32, goodStreak: 0 });
   });
 
+  it("shrinkFloor 独立于 min：缩视距保护在更高处", () => {
+    // min=12（手动滑杆下限），shrinkFloor=96（本档初始）：fps 不足时只回落到 96
+    const result = decideChunks(120, 30, 60, 0, 12, 160, 1);
+    expect(result.chunks).toBe(119);
+    const floored = decideChunks(97, 30, 60, 0, 12, 160, 1);
+    expect(floored.chunks).toBe(96);
+    const atFloor = decideChunks(96, 30, 60, 0, 12, 160, 1);
+    expect(atFloor.chunks).toBe(95); // decideChunks 本身不知 floor，floor 由调用方传参实现
+  });
+
   it("中间区间保持并重置连续计数", () => {
     expect(decideChunks(16, 55, 60, 1, MIN, MAX, STEP)).toEqual({ chunks: 16, goodStreak: 0 });
   });

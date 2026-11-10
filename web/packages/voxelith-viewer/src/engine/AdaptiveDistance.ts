@@ -15,8 +15,11 @@ export interface AdaptiveDistanceOptions {
   mobile?: boolean;
   /** 目标帧率（显式指定时覆盖 mobile 推导） */
   targetFps?: number;
-  /** 视距下限（区块），默认 12 */
+  /** 视距下限（区块），默认 12（手动滑杆的绝对下限） */
   minChunks?: number;
+  /** 自动缩视距的下限（区块）：FPS 不足时视距回落到这里为止，缺省 = minChunks。
+   *  下限保护：设为本档初始视距时，弱设备宁可掉帧也不让远处糊成色图。 */
+  shrinkFloorChunks?: number;
   /** 视距上限（区块），默认 160（视距内是块级几何，窗户可辨；2026-11-06 由 32→96→160） */
   maxChunks?: number;
   /** 每次调整步长（区块），默认 1 */
@@ -66,6 +69,7 @@ export class AdaptiveDistance {
   private readonly tileManager: TileManager;
   private readonly targetFps: number;
   private readonly minChunks: number;
+  private readonly shrinkFloorChunks: number;
   private readonly maxChunks: number;
   private readonly stepChunks: number;
   private readonly windowMs: number;
@@ -84,6 +88,7 @@ export class AdaptiveDistance {
     this.tileManager = options.tileManager;
     this.targetFps = options.targetFps ?? (options.mobile ? 30 : 60);
     this.minChunks = options.minChunks ?? 12;
+    this.shrinkFloorChunks = options.shrinkFloorChunks ?? this.minChunks;
     this.maxChunks = options.maxChunks ?? 160;
     this.stepChunks = options.stepChunks ?? 1;
     this.windowMs = options.windowMs ?? 3000;
@@ -132,7 +137,9 @@ export class AdaptiveDistance {
           fps,
           this.targetFps,
           this.goodStreak,
-          this.minChunks,
+          // 自动缩视距只回落到下限保护值（本档初始视距），远处保持块级几何不糊；
+          // 手动滑杆（setChunks）仍受 minChunks 绝对下限
+          this.shrinkFloorChunks,
           this.maxChunks,
           this.stepChunks,
         );
